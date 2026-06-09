@@ -1,0 +1,46 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<!-- This is a ROS package file, intended to allow this library to be built
+     side-by-side to ROS packages in a catkin/ament environment.
+-->
+<package format="3">
+  <name>mola_input_rosbag1</name>
+  <version>0.1.0</version>
+  <description>MOLA DataSource from ROS1 bag files that does not need a ROS1 installation</description>
+
+  <maintainer email="joseluisblancoc@gmail.com">Jose-Luis Blanco-Claraco</maintainer>
+  <license file="LICENSE">BSD-3-Clause</license>
+
+  <url type="website">https://github.com/MOLAorg/mola_input_ros1bag</url>
+
+  <depend>mola_common</depend>
+  <depend>mola_kernel</depend>
+  <depend>mrpt_libobs</depend>
+  <depend>mrpt_libmaps</depend>
+  <!-- mrpt_libros_bridge is vendored here as a git submodule (mrpt_ros_bridge/)
+       until it is released within MRPT itself. -->
+  <!-- ROS1 message definitions and rosbag (de)serialization are vendored under
+       ros1/, so no ROS1 installation is required. These are the system
+       libraries needed to build that vendored rosbag reader: -->
+  <depend>bzip2</depend>
+  <depend>liblz4-dev</depend>
+  <depend>libboost-date-time-dev</depend>
+  <depend>libboost-filesystem-dev</depend>
+  <depend>libboost-program-options-dev</depend>
+  <depend>libboost-regex-dev</depend>
+
+  <depend>libopencv-dev</depend>
+
+  <depend>geometry_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>tf2_ros</depend>
+  <doc_depend>doxygen</doc_depend>
+
+  <!-- Minimum entries to release non-catkin pkgs: -->
+  <buildtool_depend>cmake</buildtool_depend>
+  <export>
+    <build_type>cmake</build_type>
+  </export>
+  <!-- End -->
+</package>
