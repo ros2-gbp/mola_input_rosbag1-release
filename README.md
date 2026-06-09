@@ -1,0 +1,23 @@
+## mola_input_rosbag1 (humble) - 0.1.0-1
+
+The packages in the `mola_input_rosbag1` repository were released into the `humble` distro by running `/home/jlblanco/code/bloom-venv/bin/bloom-release -y -r humble mola_input_rosbag1` on `Tue, 09 Jun 2026 22:28:49 -0000`
+
+The `mola_input_rosbag1` package was released.
+
+Version of package(s) in repository `mola_input_rosbag1`:
+
+- upstream repository: https://github.com/MOLAorg/mola_input_rosbag1.git
+- release repository: unknown
+- rosdistro version: `null`
+- old version: `null`
+- new version: `0.1.0-1`
+
+Versions of tools used:
+
+- bloom version: `0.14.3`
+- catkin_pkg version: `0.5.2`
+- rosdep version: `0.22.2`
+- rosdistro version: `0.9.0`
+- vcstools version: `0.1.42`
+
+
