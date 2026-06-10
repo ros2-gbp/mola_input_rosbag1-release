@@ -5,9 +5,11 @@
 #  - Reads a ROS 1 ".bag" file (no ROS 1 installation required), and
 #  - Shows the MOLA visualizer with the raw sensor streams.
 #
+# Dataset: https://ntu-aris.github.io/ntu_viral_dataset/
+#
 # Example of usage:
 #   ROSBAG1_FILE=/path/to/dataset.bag \
-#     mola-cli src/mola_input_rosbag1/mola-cli-launchs/ros1bag_just_view.yaml
+#     mola-cli src/mola_input_rosbag1/mola-cli-launchs/rosbag1_ntu_viral.yaml
 #
 # Optional environment variables:
 #   ROSBAG1_FILE         (REQUIRED) path to the input .bag file.
@@ -21,6 +23,7 @@ modules:
   # =====================
   - name: viz
     type: ${MOLA_GUI_MODULE|mola::MolaVizImGui}
+    enabled: ${MOLA_ROSBAG1_WITH_GUI|true} # Set MOLA_ROSBAG1_WITH_GUI to false if this file is used jointly to others with their own GUI modules.
     #verbosity_level: DEBUG
     params: ~ # none
 
@@ -38,7 +41,18 @@ modules:
     # 'raw_sensor_label' must match a topic name present in the bag (which is
     # used as the default sensorLabel in the automatic-topic mode below).
     gui_preview_sensors:
-      - raw_sensor_label: ${MOLA_PREVIEW_TOPIC|'/points'}
+      - raw_sensor_label: "/os1_cloud_node1/points"
+        decimation: 1
+        win_pos: 5 5 400 400
+
+      - raw_sensor_label: "/os1_cloud_node2/points"
+        decimation: 1
+        win_pos: 5 5 400 400
+
+      - raw_sensor_label: "/right/image_raw"
+        decimation: 1
+        win_pos: 5 5 400 400
+      - raw_sensor_label: "/left/image_raw"
         decimation: 1
         win_pos: 5 5 400 400
 
@@ -64,9 +78,29 @@ modules:
       # if the bag has no /tf), pick specific topics, or remap message types
       # (e.g. read a PointCloud2 as a CObservationRotatingScan). Example:
       #
-      #sensors:
-      #  - topic: /points
-      #    type: CObservationPointCloud
-      #    # If present, this overrides whatever /tf says about the sensor pose:
-      #    fixed_sensor_pose: "0 0 0 0 0 0"  # 'x y z yaw_deg pitch_deg roll_deg'
-      #    use_fixed_sensor_pose: ${MOLA_USE_FIXED_SENSOR_POSE|false}
+      sensors:
+        - topic: "/os1_cloud_node1/points"
+          #type: CObservationPointCloud
+          # If present, this overrides whatever /tf says about the sensor pose:
+          fixed_sensor_pose: "-0.050 0.000 0.055 0 180 0" # 'x y z yaw_deg pitch_deg roll_deg'
+          use_fixed_sensor_pose: true
+
+        - topic: "/os1_cloud_node2/points"
+          #type: CObservationPointCloud
+          # If present, this overrides whatever /tf says about the sensor pose:
+          fixed_sensor_pose: "0.550 0.030 -0.05 0 0 -90" # 'x y z yaw_deg pitch_deg roll_deg'
+          use_fixed_sensor_pose: true
+
+        - topic: "/right/image_raw"
+          #type: CObservationImage
+          # If present, this overrides whatever /tf says about the sensor pose:
+          # TODO: put real camera pose!
+          fixed_sensor_pose: "0 0 0 0 0 0" # 'x y z yaw_deg pitch_deg roll_deg'
+          use_fixed_sensor_pose: true
+
+        - topic: "/left/image_raw"
+          #type: CObservationImage
+          # If present, this overrides whatever /tf says about the sensor pose:
+          # TODO: put real camera pose!
+          fixed_sensor_pose: "0 0 0 0 0 0" # 'x y z yaw_deg pitch_deg roll_deg'
+          use_fixed_sensor_pose: true
