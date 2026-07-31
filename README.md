@@ -5,8 +5,8 @@
 | ROS 2 Humble (u22.04) | [![Build Status](https://build.ros2.org/job/Hdev__mola_input_rosbag1__ubuntu_jammy_amd64/badge/icon)](https://build.ros2.org/job/Hdev__mola_input_rosbag1__ubuntu_jammy_amd64/) | amd64 [![Build Status](https://build.ros2.org/job/Hbin_uJ64__mola_input_rosbag1__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uJ64__mola_input_rosbag1__ubuntu_jammy_amd64__binary/) <br> arm64 [![Build Status](https://build.ros2.org/job/Hbin_ujv8_uJv8__mola_input_rosbag1__ubuntu_jammy_arm64__binary/badge/icon)](https://build.ros2.org/job/Hbin_ujv8_uJv8__mola_input_rosbag1__ubuntu_jammy_arm64__binary/)  | [![Version](https://img.shields.io/ros/v/humble/mola_input_rosbag1)](https://index.ros.org/?search_packages=true&pkgs=mola_input_rosbag1) |
 | ROS 2 Jazzy (u24.04) | [![Build Status](https://build.ros2.org/job/Jdev__mola_input_rosbag1__ubuntu_noble_amd64/badge/icon)](https://build.ros2.org/job/Jdev__mola_input_rosbag1__ubuntu_noble_amd64/) | | [![Version](https://img.shields.io/ros/v/jazzy/mola_input_rosbag1)](https://index.ros.org/?search_packages=true&pkgs=mola_input_rosbag1) |
 | ROS 2 Kilted (u24.04) | [![Build Status](https://build.ros2.org/job/Kdev__mola_input_rosbag1__ubuntu_noble_amd64/badge/icon)](https://build.ros2.org/job/Kdev__mola_input_rosbag1__ubuntu_noble_amd64/) |  |[![Version](https://img.shields.io/ros/v/kilted/mola_input_rosbag1)](https://index.ros.org/?search_packages=true&pkgs=mola_input_rosbag1) |
-| ROS 2 Lyrical (u26.04) | [![Build Status](https://build.ros2.org/job/Ldev__mola_input_rosbag1__ubuntu_resolute_amd64/badge/icon)](https://build.ros2.org/job/Ldev__mola_input_rosbag1__ubuntu_resolute_amd64/) |  | [![Version](https://img.shields.io/ros/v/rolling/mola_input_rosbag1)](https://index.ros.org/?search_packages=true&pkgs=mola_input_rosbag1) |
-| ROS 2 Rolling (u26.04) | [![Build Status](https://build.ros2.org/job/Rdev__mola_input_rosbag1__ubuntu_resolute_amd64/badge/icon)](https://build.ros2.org/job/Rdev__mola_input_rosbag1__ubuntu_resolute_amd64/) |  | [![Version](https://img.shields.io/ros/v/rolling/mola_input_rosbag1)](https://index.ros.org/?search_packages=true&pkgs=mola_input_rosbag1) |
+| ROS 2 Lyrical (u26.04) | [![Build Status](https://build.ros2.org/job/Ldev__mola_input_rosbag1__ubuntu_resolute_amd64/badge/icon)](https://build.ros2.org/job/Ldev__mola_input_rosbag1__ubuntu_resolute_amd64/) | amd64 [![Build Status](https://build.ros2.org/job/Lbin_uR64__mola_input_rosbag1__ubuntu_resolute_amd64__binary/badge/icon)](https://build.ros2.org/job/Lbin_uR64__mola_input_rosbag1__ubuntu_resolute_amd64__binary/) <br> arm64 [![Build Status](https://build.ros2.org/job/Lbin_unv8_uRv8__mola_input_rosbag1__ubuntu_resolute_arm64__binary/badge/icon)](https://build.ros2.org/job/Lbin_unv8_uRv8__mola_input_rosbag1__ubuntu_resolute_arm64__binary/) | [![Version](https://img.shields.io/ros/v/lyrical/mola_input_rosbag1)](https://index.ros.org/?search_packages=true&pkgs=mola_input_rosbag1) |
+| ROS 2 Rolling (u26.04) | [![Build Status](https://build.ros2.org/job/Rdev__mola_input_rosbag1__ubuntu_resolute_amd64/badge/icon)](https://build.ros2.org/job/Rdev__mola_input_rosbag1__ubuntu_resolute_amd64/) | amd64 [![Build Status](https://build.ros2.org/job/Rbin_uR64__mola_input_rosbag1__ubuntu_resolute_amd64__binary/badge/icon)](https://build.ros2.org/job/Rbin_uR64__mola_input_rosbag1__ubuntu_resolute_amd64__binary/) <br> arm64 [![Build Status](https://build.ros2.org/job/Rbin_unv8_uRv8__mola_input_rosbag1__ubuntu_resolute_arm64__binary/badge/icon)](https://build.ros2.org/job/Rbin_unv8_uRv8__mola_input_rosbag1__ubuntu_resolute_arm64__binary/) | [![Version](https://img.shields.io/ros/v/rolling/mola_input_rosbag1)](https://index.ros.org/?search_packages=true&pkgs=mola_input_rosbag1) |
 
 A MOLA `RawDataSource` module that reads **ROS 1 `.bag` files** and exposes their
 contents as MOLA observations, **without requiring a ROS 1 installation**.
@@ -32,6 +32,7 @@ Typical uses:
 | `sensor_msgs/Image`       | `CObservationImage` (mono8, mono16, rgb8, bgr8, rgba8, bgra8, bayer_rggb8, bayer_bggr8, bayer_gbrg8, bayer_grbg8) |
 | `sensor_msgs/CompressedImage` | `CObservationImage` (JPEG, PNG, and any format supported by OpenCV `imdecode`) |
 | `sensor_msgs/PointCloud2` | `CObservationPointCloud` (XYZ / XYZI / XYZIRT) or `CObservationRotatingScan` |
+| `livox_ros_driver/CustomMsg`, `livox_ros_driver2/CustomMsg` | `CObservationPointCloud` (XYZIRT: intensity=reflectivity, ring=line, time=offset_time) |
 | `sensor_msgs/LaserScan`   | `CObservation2DRangeScan`      |
 | `sensor_msgs/NavSatFix`   | `CObservationGPS`              |
 | `nav_msgs/Odometry`       | `CObservationOdometry`         |
@@ -59,15 +60,17 @@ The pose of each sensor in the robot body frame is looked up from the bag's
 
 | Param | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `rosbag_filename`    | yes | -          | Path to the input `.bag` file. |
+| `rosbag_filename`    | yes | -          | Path to the input `.bag` file, **or a YAML sequence of paths** to merge and replay jointly in time order (e.g. a sensors bag plus a separate ground-truth-only bag). |
 | `base_link_frame_id` | no  | `base_link`| Robot body frame for tf pose lookup. |
 | `time_warp_scale`    | no  | `1.0`      | Playback speed multiplier. |
 | `read_ahead_length`  | no  | `15`       | Number of messages pre-read ahead. |
 | `start_paused`       | no  | `false`    | Start playback paused. |
 | `sensors`            | no  | auto       | Explicit list of topics, types, and pose overrides. If omitted, all topics with a known mapping are exposed automatically using the topic name as `sensorLabel`. |
+| `ground_truth_topic` | no  | -          | Topic (`geometry_msgs/PoseStamped` or `nav_msgs/Odometry`) pre-scanned at start-up into a full trajectory, exposed via the `mola::OfflineDatasetSource` ground-truth API (`hasGroundTruthTrajectory()` / `getGroundTruthTrajectory()`), e.g. for `evo`-style evaluation. This is independent from (and can be combined with) listing the same topic under `sensors` for normal per-timestep publishing as a `CObservationRobotPose`/`CObservationOdometry`. |
 
 See `mola-cli-launchs/rosbag1_lidar.yaml` for a fully documented `sensors`
-example.
+example, and `mola-cli-launchs/rosbag1_botanicgarden.yaml` for an example
+combining multiple input bags with `ground_truth_topic`.
 
 ## Demos
 
@@ -83,9 +86,13 @@ ROSBAG1_FILE=/path/to/dataset.bag \
 
 ### 2. ROS 1 -> ROS 2 bridge
 
+Example for the NTU Viral dataset:
+
 ```bash
-ROSBAG1_FILE=/path/to/dataset.bag \
-  mola-cli src/mola_input_rosbag1/mola-cli-launchs/rosbag1_to_ros2.yaml
+ROSBAG1_FILE=/mnt/storage/ntu-viral/eee_01/eee_01.bag \
+mola-cli \
+  src/mola_input_rosbag1/mola-cli-launchs/rosbag1_ntu_viral.yaml \
+  src/mola_input_rosbag1/mola-cli-launchs/publish_to_ros2.yam
 ```
 
 Then, in another terminal with ROS 2 sourced:
