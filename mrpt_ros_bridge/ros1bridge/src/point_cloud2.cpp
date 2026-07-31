@@ -132,47 +132,7 @@ bool mrpt::ros1bridge::fromROS(const sensor_msgs::PointCloud2& msg, CSimplePoint
   return true;
 }
 
-bool mrpt::ros1bridge::fromROS(const sensor_msgs::PointCloud2& msg, CPointsMapXYZI& obj)
-{
-  // Copy point data
-  unsigned int num_points = msg.width * msg.height;
-  obj.clear();
-  obj.reserve(num_points);
-
-  bool incompatible = false;
-  const sensor_msgs::PointField *x_field = nullptr, *y_field = nullptr, *z_field = nullptr,
-                                *i_field = nullptr;
-
-  for (unsigned int i = 0; i < msg.fields.size() && !incompatible; i++)
-  {
-    incompatible |= check_field(msg.fields[i], "x", &x_field);
-    incompatible |= check_field(msg.fields[i], "y", &y_field);
-    incompatible |= check_field(msg.fields[i], "z", &z_field);
-    incompatible |= check_field(msg.fields[i], "intensity", &i_field);
-  }
-
-  if (incompatible || (!x_field || !y_field || !z_field || !i_field)) return false;
-
-  for (unsigned int row = 0; row < msg.height; ++row)
-  {
-    const unsigned char* row_data = &msg.data[row * msg.row_step];
-    for (uint32_t col = 0; col < msg.width; ++col)
-    {
-      const unsigned char* msg_data = row_data + col * msg.point_step;
-
-      float x, y, z, i;
-      get_float_from_field(x_field, msg_data, x);
-      get_float_from_field(y_field, msg_data, y);
-      get_float_from_field(z_field, msg_data, z);
-      get_float_from_field(i_field, msg_data, i);
-      obj.insertPoint(x, y, z);
-      obj.insertPointField_float(mrpt::maps::CPointsMap::POINT_FIELD_INTENSITY, i);
-    }
-  }
-  return true;
-}
-
-bool mrpt::ros1bridge::fromROS(const sensor_msgs::PointCloud2& msg, CPointsMapXYZIRT& obj)
+bool mrpt::ros1bridge::fromROS(const sensor_msgs::PointCloud2& msg, CGenericPointsMap& obj)
 {
   // Copy point data
   unsigned int num_points = msg.width * msg.height;
@@ -196,7 +156,11 @@ bool mrpt::ros1bridge::fromROS(const sensor_msgs::PointCloud2& msg, CPointsMapXY
 
   if (incompatible || (!x_field || !y_field || !z_field)) return false;
 
-  obj.resize_XYZIRT(num_points, !!i_field, !!r_field, !!t_field);
+  if (i_field) obj.registerField_float(CPointsMap::POINT_FIELD_INTENSITY);
+  if (r_field) obj.registerField_uint16(CPointsMap::POINT_FIELD_RING_ID);
+  if (t_field) obj.registerField_float(CPointsMap::POINT_FIELD_TIMESTAMP);
+
+  obj.resize(num_points);
 
   std::optional<float> minTime, maxTime;
 
@@ -218,35 +182,34 @@ bool mrpt::ros1bridge::fromROS(const sensor_msgs::PointCloud2& msg, CPointsMapXY
       {
         float i;
         get_float_from_field(i_field, msg_data, i);
-        obj.setPointIntensity(idx, i);
+        obj.setPointField_float(idx, CPointsMap::POINT_FIELD_INTENSITY, i);
       }
       if (r_field)
       {
         uint16_t ring_id = 0;
         get_uint16_from_field(r_field, msg_data, ring_id);
-        obj.setPointRing(idx, ring_id);
+        obj.setPointField_uint16(idx, CPointsMap::POINT_FIELD_RING_ID, ring_id);
       }
       if (t_field)
       {
+        float t = 0;
         if (t_field->datatype == sensor_msgs::PointField::FLOAT32)
         {
-          float t = 0;
           get_float_from_field(t_field, msg_data, t);
-          obj.setPointTime(idx, t);
         }
         else
         {
-          uint32_t t = 0;
-          get_uint32_from_field(t_field, msg_data, t);
+          uint32_t t_raw = 0;
+          get_uint32_from_field(t_field, msg_data, t_raw);
 
           // Convention:
           // I only found one case (NTU Viral dataset) using uint32_t for time,
           // and times ranged from 0 to ~99822766 = 100,000,000 = 1e8
           // so they seem to be nanoseconds:
-          obj.setPointTime(idx, t * 1e-9);
+          t = t_raw * 1e-9f;
         }
+        obj.setPointField_float(idx, CPointsMap::POINT_FIELD_TIMESTAMP, t);
 
-        const float t = obj.getPointTime(idx);
         if (!minTime)
         {
           minTime = t;
@@ -262,12 +225,13 @@ bool mrpt::ros1bridge::fromROS(const sensor_msgs::PointCloud2& msg, CPointsMapXY
   }
 
   // Force timestamps to be in the range [-T/2,T/2]:
-  if (minTime && *maxTime > *minTime)
+  if (t_field && minTime && *maxTime > *minTime)
   {
     const float At = (*maxTime - *minTime) * 0.5f;
     for (size_t i = 0; i < obj.size(); i++)
     {
-      obj.setPointTime(i, obj.getPointTime(i) - At);
+      const float t = obj.getPointField_float(i, CPointsMap::POINT_FIELD_TIMESTAMP);
+      obj.setPointField_float(i, CPointsMap::POINT_FIELD_TIMESTAMP, t - At);
     }
   }
 
@@ -326,7 +290,7 @@ bool mrpt::ros1bridge::toROS(
 }
 
 bool mrpt::ros1bridge::toROS(
-    const CPointsMapXYZI& obj, const std_msgs::Header& msg_header, sensor_msgs::PointCloud2& msg)
+    const CGenericPointsMap& obj, const std_msgs::Header& msg_header, sensor_msgs::PointCloud2& msg)
 {
   msg.header = msg_header;
 
@@ -335,81 +299,35 @@ bool mrpt::ros1bridge::toROS(
   msg.height = 1;
   msg.width = obj.size();
 
-  std::array<std::string, 4> names = {"x", "y", "z", "intensity"};
-  std::array<size_t, 4> offsets = {0, sizeof(float) * 1, sizeof(float) * 2, sizeof(float) * 3};
-
-  msg.fields.resize(4);
-  for (size_t i = 0; i < 4; i++)
-  {
-    auto& f = msg.fields.at(i);
-
-    f.count = 1;
-    f.offset = offsets[i];
-    f.datatype = sensor_msgs::PointField::FLOAT32;
-    f.name = names[i];
-  }
-
-#if MRPT_IS_BIG_ENDIAN
-  msg.is_bigendian = true;
-#else
-  msg.is_bigendian = false;
-#endif
-
-  msg.point_step = sizeof(float) * 4;
-  msg.row_step = msg.width * msg.point_step;
-
-  // data:
-  msg.data.resize(msg.row_step * msg.height);
-
-  const auto& xs = obj.getPointsBufferRef_x();
-  const auto& ys = obj.getPointsBufferRef_y();
-  const auto& zs = obj.getPointsBufferRef_z();
-  const auto* Is = obj.getPointsBufferRef_float_field(mrpt::maps::CPointsMap::POINT_FIELD_INTENSITY);
-
-  float* pointDest = reinterpret_cast<float*>(msg.data.data());
-  for (size_t i = 0; i < xs.size(); i++)
-  {
-    *pointDest++ = xs[i];
-    *pointDest++ = ys[i];
-    *pointDest++ = zs[i];
-    *pointDest++ = (*Is)[i];
-  }
-
-  return true;
-}
-
-bool mrpt::ros1bridge::toROS(
-    const CPointsMapXYZIRT& obj, const std_msgs::Header& msg_header, sensor_msgs::PointCloud2& msg)
-{
-  msg.header = msg_header;
-
-  // 2D structure of the point cloud. If the cloud is unordered, height is
-  //  1 and width is the length of the point cloud.
-  msg.height = 1;
-  msg.width = obj.size();
+  const bool hasIntensity = obj.hasPointField(CPointsMap::POINT_FIELD_INTENSITY);
+  const bool hasTime = obj.hasPointField(CPointsMap::POINT_FIELD_TIMESTAMP);
+  const bool hasRing = obj.hasPointField(CPointsMap::POINT_FIELD_RING_ID);
 
   std::vector<std::string> names = {"x", "y", "z"};
   std::vector<size_t> offsets = {0, sizeof(float) * 1, sizeof(float) * 2};
 
   msg.point_step = sizeof(float) * 3;
 
-  if (obj.hasIntensityField())
+  if (hasIntensity)
   {
-    ASSERT_EQUAL_(obj.getPointsBufferRef_float_field(mrpt::maps::CPointsMap::POINT_FIELD_INTENSITY)->size(), obj.size());
+    ASSERT_EQUAL_(
+        obj.getPointsBufferRef_float_field(CPointsMap::POINT_FIELD_INTENSITY)->size(), obj.size());
     names.push_back("intensity");
     offsets.push_back(msg.point_step);
     msg.point_step += sizeof(float);
   }
-  if (obj.hasTimeField())
+  if (hasTime)
   {
-    ASSERT_EQUAL_(obj.getPointsBufferRef_float_field(mrpt::maps::CPointsMap::POINT_FIELD_TIMESTAMP)->size(), obj.size());
+    ASSERT_EQUAL_(
+        obj.getPointsBufferRef_float_field(CPointsMap::POINT_FIELD_TIMESTAMP)->size(), obj.size());
     names.push_back("time");
     offsets.push_back(msg.point_step);
     msg.point_step += sizeof(float);
   }
-  if (obj.hasRingField())
+  if (hasRing)
   {
-    ASSERT_EQUAL_(obj.getPointsBufferRef_uint16_field(mrpt::maps::CPointsMap::POINT_FIELD_RING_ID)->size(), obj.size());
+    ASSERT_EQUAL_(
+        obj.getPointsBufferRef_uint16_field(CPointsMap::POINT_FIELD_RING_ID)->size(), obj.size());
     names.push_back("ring");
     offsets.push_back(msg.point_step);
     msg.point_step += sizeof(uint16_t);
@@ -441,13 +359,13 @@ bool mrpt::ros1bridge::toROS(
   const auto& xs = obj.getPointsBufferRef_x();
   const auto& ys = obj.getPointsBufferRef_y();
   const auto& zs = obj.getPointsBufferRef_z();
-  // MRPT >=2.14 uses generic string-keyed field accessors:
-  const auto& Is =
-      *obj.getPointsBufferRef_float_field(mrpt::maps::CPointsMap::POINT_FIELD_INTENSITY);
-  const auto& Rs =
-      *obj.getPointsBufferRef_uint16_field(mrpt::maps::CPointsMap::POINT_FIELD_RING_ID);
-  const auto& Ts =
-      *obj.getPointsBufferRef_float_field(mrpt::maps::CPointsMap::POINT_FIELD_TIMESTAMP);
+  const auto* Is = hasIntensity
+                       ? obj.getPointsBufferRef_float_field(CPointsMap::POINT_FIELD_INTENSITY)
+                       : nullptr;
+  const auto* Ts =
+      hasTime ? obj.getPointsBufferRef_float_field(CPointsMap::POINT_FIELD_TIMESTAMP) : nullptr;
+  const auto* Rs =
+      hasRing ? obj.getPointsBufferRef_uint16_field(CPointsMap::POINT_FIELD_RING_ID) : nullptr;
 
   uint8_t* pointDest = msg.data.data();
   for (size_t i = 0; i < xs.size(); i++)
@@ -457,11 +375,11 @@ bool mrpt::ros1bridge::toROS(
     memcpy(pointDest + offsets[f++], &ys[i], sizeof(float));
     memcpy(pointDest + offsets[f++], &zs[i], sizeof(float));
 
-    if (obj.hasIntensityField()) memcpy(pointDest + offsets[f++], &Is[i], sizeof(float));
+    if (hasIntensity) memcpy(pointDest + offsets[f++], &(*Is)[i], sizeof(float));
 
-    if (obj.hasTimeField()) memcpy(pointDest + offsets[f++], &Ts[i], sizeof(float));
+    if (hasTime) memcpy(pointDest + offsets[f++], &(*Ts)[i], sizeof(float));
 
-    if (obj.hasRingField()) memcpy(pointDest + offsets[f++], &Rs[i], sizeof(uint16_t));
+    if (hasRing) memcpy(pointDest + offsets[f++], &(*Rs)[i], sizeof(uint16_t));
 
     pointDest += msg.point_step;
   }
