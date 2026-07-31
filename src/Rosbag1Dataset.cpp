@@ -22,6 +22,7 @@
 #include <mrpt/containers/yaml.h>
 #include <mrpt/core/initializer.h>
 #include <mrpt/img/CImage.h>
+#include <mrpt/maps/CGenericPointsMap.h>
 #include <mrpt/obs/CObservation2DRangeScan.h>
 #include <mrpt/obs/CObservation3DRangeScan.h>
 #include <mrpt/obs/CObservationGPS.h>
@@ -29,6 +30,7 @@
 #include <mrpt/obs/CObservationImage.h>
 #include <mrpt/obs/CObservationOdometry.h>
 #include <mrpt/obs/CObservationPointCloud.h>
+#include <mrpt/obs/CObservationRobotPose.h>
 #include <mrpt/obs/CObservationRotatingScan.h>
 #include <mrpt/poses/CPose3DPDFGaussian.h>
 #include <mrpt/system/filesystem.h>
@@ -42,7 +44,9 @@
 #include <mrpt/ros1bridge/time.h>
 
 // Vendored ROS1 message definitions and rosbag reader:
+#include <geometry_msgs/PoseStamped.h>
 #include <geometry_msgs/TransformStamped.h>
+#include <livox_ros_driver/CustomMsg.h>
 #include <nav_msgs/Odometry.h>
 #include <rosbag/bag.h>
 #include <rosbag/view.h>
@@ -258,9 +262,12 @@ void Rosbag1Dataset::initialize_rds(const Yaml& c)
       {"sensor_msgs/Image", "CObservationImage"},
       {"sensor_msgs/CompressedImage", "CObservationImage"},
       {"sensor_msgs/PointCloud2", "CObservationPointCloud"},
+      {"livox_ros_driver/CustomMsg", "CObservationPointCloud"},
+      {"livox_ros_driver2/CustomMsg", "CObservationPointCloud"},
       {"sensor_msgs/LaserScan", "CObservation2DRangeScan"},
       {"sensor_msgs/NavSatFix", "CObservationGPS"},
       {"nav_msgs/Odometry", "CObservationOdometry"},
+      {"geometry_msgs/PoseStamped", "CObservationRobotPose"},
   };
 
   MRPT_START
@@ -271,18 +278,37 @@ void Rosbag1Dataset::initialize_rds(const Yaml& c)
   const auto cfg = c["params"];
   MRPT_LOG_DEBUG_STREAM("Initializing with these params:\n" << cfg);
 
-  YAML_LOAD_MEMBER_REQ(rosbag_filename, std::string);
+  // 'rosbag_filename' may be either a single scalar path, or a YAML sequence
+  // of paths, so that several .bag files (e.g. a sensors bag plus a separate
+  // ground-truth-only bag) can be merged and replayed jointly, in time order.
+  ENSURE_YAML_ENTRY_EXISTS(cfg, "rosbag_filename");
+  const auto rosbagFilenameNode = cfg["rosbag_filename"];
+  if (rosbagFilenameNode.isSequence())
+  {
+    const auto seq = rosbagFilenameNode.asSequence();
+    for (const auto& f : seq)
+    {
+      // Skip empty entries, e.g. coming from an unset "${OPTIONAL_BAG|}"
+      // mola-cli environment-variable placeholder, so that a second
+      // (ground-truth) bag can be made optional in a launch file.
+      if (auto s = f.as<std::string>(); !s.empty()) rosbag_filenames_.push_back(s);
+    }
+  }
+  else
+  {
+    rosbag_filenames_.push_back(rosbagFilenameNode.as<std::string>());
+  }
+  ASSERT_(!rosbag_filenames_.empty());
+  rosbag_filename_ = rosbag_filenames_.front();
+
   YAML_LOAD_MEMBER_OPT(time_warp_scale, double);
   YAML_LOAD_MEMBER_OPT(base_link_frame_id, std::string);
   YAML_LOAD_MEMBER_OPT(read_ahead_length, size_t);
+  YAML_LOAD_MEMBER_OPT(ground_truth_topic, std::string);
   paused_ = cfg.getOrDefault<bool>("start_paused", paused_);
 
-  const bool isFile = mrpt::system::fileExists(rosbag_filename_);
-  ASSERTMSG_(isFile, "'"s + rosbag_filename_ + "' is not an existing file."s);
-
-  // Open input ros bag:
-  // TODO(jlbc): If a directory is provided, open all bags with one View.
-  for (const auto& file : std::vector<std::string>({rosbag_filename_}))
+  // Open input ros bag(s), merging them into one single chronological View:
+  for (const auto& file : rosbag_filenames_)
   {
     ASSERT_FILE_EXISTS_(file);
     MRPT_LOG_INFO_STREAM("Opening: " << file);
@@ -346,6 +372,95 @@ void Rosbag1Dataset::initialize_rds(const Yaml& c)
                          << "Known frames: " << tfBuffer_->allFramesAsString());
     else
       MRPT_LOG_WARN("No /tf_static messages found in the bag. Sensor poses will rely on /tf only.");
+  }
+
+  // Pre-scan the ground-truth topic (if any), e.g. messages coming from a
+  // separate, GT-only bag file merged above, to build a full trajectory_t
+  // exposed via the mola::OfflineDatasetSource ground-truth API
+  // (hasGroundTruthTrajectory() / getGroundTruthTrajectory()), in addition to
+  // the normal per-timestep publishing as a regular observation (if the same
+  // topic is also listed under "sensors").
+  if (!ground_truth_topic_.empty())
+  {
+    if (topic2type.count(ground_truth_topic_) == 0)
+    {
+      MRPT_LOG_WARN_STREAM(
+          "ground_truth_topic '" << ground_truth_topic_
+                                 << "' was given but does not exist in the input bag(s).");
+    }
+    else
+    {
+      const std::string& gtType = topic2type.at(ground_truth_topic_);
+
+      rosbag::View gtView;
+      for (const auto& bag : bag_reader_->bags)
+      {
+        gtView.addQuery(*bag, rosbag::TopicQuery(std::vector<std::string>({ground_truth_topic_})));
+      }
+
+      size_t nGtPoses = 0;
+      for (const auto& rosmsg : gtView)
+      {
+        mrpt::poses::CPose3D    pose;
+        mrpt::Clock::time_point tim;
+
+        if (gtType == "geometry_msgs/PoseStamped")
+        {
+          const auto m = rosmsg.instantiate<geometry_msgs::PoseStamped>();
+          if (!m) continue;
+          const auto& q = m->pose.orientation;
+          if (!std::isfinite(q.x) || !std::isfinite(q.y) || !std::isfinite(q.z) ||
+              !std::isfinite(q.w))
+          {
+            // Some datasets contain a few malformed GT entries (e.g. NaN
+            // quaternion from a degenerate pose-graph node): skip them
+            // rather than aborting the whole pre-scan.
+            MRPT_LOG_THROTTLE_WARN_FMT(
+                5.0, "Skipping ground-truth pose with non-finite quaternion on topic '%s'.",
+                ground_truth_topic_.c_str());
+            continue;
+          }
+          pose = mrpt::ros1bridge::fromROS(m->pose);
+          tim  = mrpt::ros1bridge::fromROS(m->header.stamp);
+        }
+        else if (gtType == "nav_msgs/Odometry")
+        {
+          const auto m = rosmsg.instantiate<nav_msgs::Odometry>();
+          if (!m) continue;
+          const auto& q = m->pose.pose.orientation;
+          if (!std::isfinite(q.x) || !std::isfinite(q.y) || !std::isfinite(q.z) ||
+              !std::isfinite(q.w))
+          {
+            MRPT_LOG_THROTTLE_WARN_FMT(
+                5.0, "Skipping ground-truth pose with non-finite quaternion on topic '%s'.",
+                ground_truth_topic_.c_str());
+            continue;
+          }
+          pose = mrpt::ros1bridge::fromROS(m->pose).mean;
+          tim  = mrpt::ros1bridge::fromROS(m->header.stamp);
+        }
+        else
+        {
+          MRPT_LOG_THROTTLE_WARN_FMT(
+              5.0,
+              "ground_truth_topic '%s' has unsupported message type '%s' "
+              "(supported: geometry_msgs/PoseStamped, nav_msgs/Odometry).",
+              ground_truth_topic_.c_str(), gtType.c_str());
+          break;
+        }
+
+        groundTruthTrajectory_.insert(tim, pose);
+        nGtPoses++;
+      }
+
+      if (nGtPoses > 0)
+        MRPT_LOG_INFO_STREAM(
+            "Pre-scanned " << nGtPoses << " ground-truth pose(s) from '" << ground_truth_topic_
+                           << "' into the GT trajectory.");
+      else
+        MRPT_LOG_WARN_STREAM(
+            "ground_truth_topic '" << ground_truth_topic_ << "' yielded no usable GT poses.");
+    }
   }
 
   // Begin of code adapted from "Transcriber" class from rosbag2rawlog:
@@ -448,11 +563,39 @@ void Rosbag1Dataset::initialize_rds(const Yaml& c)
           "["s + sensor.at("fixed_sensor_pose").as<std::string>() + "]"s);
     }
 
+    // Optional: some drivers stamp messages with an internal clock never
+    // synced to the recording PC's wall clock, which breaks GT time lookups.
+    // See the doc comment on toPointCloud2() for details.
+    bool useBagRecordTime = false;
+    if (sensor.count("use_bag_record_time") != 0)
+    {
+      useBagRecordTime = sensor.at("use_bag_record_time").as<bool>();
+    }
+
     if (sensorType == "CObservationPointCloud")
     {
-      auto callback = [=](const rosbag::MessageInstance& m)
-      { return catchExceptions([=]() { return toPointCloud2(sensorLabel, m, fixedSensorPose); }); };
-      lookup_[topic].emplace_back(callback);
+      // Both sensor_msgs/PointCloud2 and livox_ros_driver(2)/CustomMsg map here;
+      // pick the right converter by checking the actual ROS type in the bag.
+      const std::string rosType = topic2type.count(topic) ? topic2type.at(topic) : "";
+      if (rosType == "livox_ros_driver/CustomMsg" || rosType == "livox_ros_driver2/CustomMsg")
+      {
+        auto callback = [=](const rosbag::MessageInstance& m)
+        {
+          return catchExceptions(
+              [=]()
+              { return toLivoxCustomMsg(sensorLabel, m, fixedSensorPose, useBagRecordTime); });
+        };
+        lookup_[topic].emplace_back(callback);
+      }
+      else
+      {
+        auto callback = [=](const rosbag::MessageInstance& m)
+        {
+          return catchExceptions(
+              [=]() { return toPointCloud2(sensorLabel, m, fixedSensorPose, useBagRecordTime); });
+        };
+        lookup_[topic].emplace_back(callback);
+      }
     }
     else if (sensorType == "CObservationImage")
     {
@@ -504,6 +647,12 @@ void Rosbag1Dataset::initialize_rds(const Yaml& c)
     {
       auto callback = [=](const rosbag::MessageInstance& m)
       { return catchExceptions([=]() { return toOdometry(sensorLabel, m); }); };
+      lookup_[topic].emplace_back(callback);
+    }
+    else if (sensorType == "CObservationRobotPose")
+    {
+      auto callback = [=](const rosbag::MessageInstance& m)
+      { return catchExceptions([=]() { return toPoseStamped(sensorLabel, m); }); };
       lookup_[topic].emplace_back(callback);
     }
     else if (!sensorType.empty())
@@ -850,14 +999,15 @@ bool Rosbag1Dataset::findOutSensorPose(
 
 Rosbag1Dataset::Obs Rosbag1Dataset::toPointCloud2(
     std::string_view label, const rosbag::MessageInstance& rosmsg,
-    const std::optional<mrpt::poses::CPose3D>& fixedSensorPose)
+    const std::optional<mrpt::poses::CPose3D>& fixedSensorPose, bool useBagRecordTime)
 {
   const auto pts = rosmsg.instantiate<sensor_msgs::PointCloud2>();
   ASSERT_(pts);
 
   auto ptsObs         = mrpt::obs::CObservationPointCloud::Create();
   ptsObs->sensorLabel = label;
-  ptsObs->timestamp   = mrpt::ros1bridge::fromROS(pts->header.stamp);
+  ptsObs->timestamp   = useBagRecordTime ? mrpt::ros1bridge::fromROS(rosmsg.getTime())
+                                         : mrpt::ros1bridge::fromROS(pts->header.stamp);
 
   bool sensorPoseOK = findOutSensorPose(
       ptsObs->sensorPose, pts->header.frame_id, base_link_frame_id_, fixedSensorPose, label);
@@ -879,12 +1029,12 @@ Rosbag1Dataset::Obs Rosbag1Dataset::toPointCloud2(
       fields.count("t"))
   {
     // XYZIRT
-    auto mrptPts       = mrpt::maps::CPointsMapXYZIRT::Create();
+    auto mrptPts       = mrpt::maps::CGenericPointsMap::Create();
     ptsObs->pointcloud = mrptPts;
 
     if (!mrpt::ros1bridge::fromROS(*pts, *mrptPts))
     {
-      THROW_EXCEPTION("Could not convert pointcloud from ROS to CPointsMapXYZIRT");
+      THROW_EXCEPTION("Could not convert pointcloud from ROS to CGenericPointsMap");
     }
 
     // Fix timestamps for Livox driver:
@@ -913,14 +1063,14 @@ Rosbag1Dataset::Obs Rosbag1Dataset::toPointCloud2(
   if (fields.count("intensity"))
   {
     // XYZI
-    auto mrptPts       = mrpt::maps::CPointsMapXYZI::Create();
+    auto mrptPts       = mrpt::maps::CGenericPointsMap::Create();
     ptsObs->pointcloud = mrptPts;
 
     if (!mrpt::ros1bridge::fromROS(*pts, *mrptPts))
     {
       MRPT_LOG_ONCE_WARN(
           "Could not convert pointcloud from ROS to "
-          "CPointsMapXYZI. Trying with XYZ");
+          "CGenericPointsMap. Trying with XYZ");
     }
     else
     {  // converted ok:
@@ -937,6 +1087,54 @@ Rosbag1Dataset::Obs Rosbag1Dataset::toPointCloud2(
     {
       THROW_EXCEPTION("Could not convert pointcloud from ROS to CSimplePointsMap");
     }
+  }
+
+  return {ptsObs};
+}
+
+Rosbag1Dataset::Obs Rosbag1Dataset::toLivoxCustomMsg(
+    std::string_view label, const rosbag::MessageInstance& rosmsg,
+    const std::optional<mrpt::poses::CPose3D>& fixedSensorPose, bool useBagRecordTime)
+{
+  // instantiate<>() matches by MD5 sum, not by type name, and
+  // livox_ros_driver2/CustomMsg shares the exact same field layout and MD5
+  // sum as livox_ros_driver/CustomMsg, so this vendored struct deserializes
+  // both message types.
+  const auto msg = rosmsg.instantiate<livox_ros_driver::CustomMsg>();
+  ASSERT_(msg);
+
+  auto ptsObs         = mrpt::obs::CObservationPointCloud::Create();
+  ptsObs->sensorLabel = label;
+  ptsObs->timestamp   = useBagRecordTime ? mrpt::ros1bridge::fromROS(rosmsg.getTime())
+                                         : mrpt::ros1bridge::fromROS(msg->header.stamp);
+
+  bool sensorPoseOK = findOutSensorPose(
+      ptsObs->sensorPose, msg->header.frame_id, base_link_frame_id_, fixedSensorPose, label);
+  if (!sensorPoseOK)
+  {
+    return {};  // tf not yet available: drop this observation (warning already logged)
+  }
+
+  auto mrptPts       = mrpt::maps::CGenericPointsMap::Create();
+  ptsObs->pointcloud = mrptPts;
+
+  mrptPts->registerField_float(mrpt::maps::CPointsMap::POINT_FIELD_INTENSITY);
+  mrptPts->registerField_uint16(mrpt::maps::CPointsMap::POINT_FIELD_RING_ID);
+  mrptPts->registerField_float(mrpt::maps::CPointsMap::POINT_FIELD_TIMESTAMP);
+
+  const size_t numPoints = msg->points.size();
+  mrptPts->resize(numPoints);
+
+  for (size_t i = 0; i < numPoints; i++)
+  {
+    const auto& pt = msg->points[i];
+
+    mrptPts->setPointFast(i, pt.x, pt.y, pt.z);
+    mrptPts->setPointField_float(i, mrpt::maps::CPointsMap::POINT_FIELD_INTENSITY, pt.reflectivity);
+    mrptPts->setPointField_uint16(i, mrpt::maps::CPointsMap::POINT_FIELD_RING_ID, pt.line);
+    // offset_time is in nanoseconds, relative to the scan's header.stamp:
+    mrptPts->setPointField_float(
+        i, mrpt::maps::CPointsMap::POINT_FIELD_TIMESTAMP, pt.offset_time * 1e-9F);
   }
 
   return {ptsObs};
@@ -1077,6 +1275,22 @@ Rosbag1Dataset::Obs Rosbag1Dataset::toOdometry(
   mrptObs->velocityLocal.vx    = odo->twist.twist.linear.x;
   mrptObs->velocityLocal.vy    = odo->twist.twist.linear.y;
   mrptObs->velocityLocal.omega = odo->twist.twist.angular.z;
+
+  return {mrptObs};
+}
+
+Rosbag1Dataset::Obs Rosbag1Dataset::toPoseStamped(
+    std::string_view label, const rosbag::MessageInstance& rosmsg)
+{
+  const auto poseMsg = rosmsg.instantiate<geometry_msgs::PoseStamped>();
+  ASSERT_(poseMsg);
+
+  auto mrptObs = mrpt::obs::CObservationRobotPose::Create();
+
+  mrptObs->sensorLabel = label;
+  mrptObs->timestamp   = mrpt::ros1bridge::fromROS(poseMsg->header.stamp);
+
+  mrptObs->pose.mean = mrpt::ros1bridge::fromROS(poseMsg->pose);
 
   return {mrptObs};
 }
