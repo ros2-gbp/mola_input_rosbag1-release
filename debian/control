@@ -1,0 +1,12 @@
+Source: ros-humble-mola-input-rosbag1
+Section: misc
+Priority: optional
+Maintainer: "Jose-Luis Blanco-Claraco" <joseluisblancoc@gmail.com>
+Build-Depends: debhelper (>= 9.0.0), cmake, libboost-date-time-dev, libboost-filesystem-dev, libboost-program-options-dev, libboost-regex-dev, libbz2-dev, liblz4-dev, libopencv-dev, ros-humble-geometry-msgs, ros-humble-mola-common, ros-humble-mola-kernel, ros-humble-mrpt-libmaps, ros-humble-mrpt-libobs, ros-humble-tf2, ros-humble-tf2-geometry-msgs, ros-humble-tf2-ros, ros-humble-ros-workspace
+Homepage: https://github.com/MOLAorg/mola_input_ros1bag
+Standards-Version: 3.9.2
+
+Package: ros-humble-mola-input-rosbag1
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, libboost-date-time-dev, libboost-filesystem-dev, libboost-program-options-dev, libboost-regex-dev, libbz2-dev, liblz4-dev, libopencv-dev, ros-humble-geometry-msgs, ros-humble-mola-common, ros-humble-mola-kernel, ros-humble-mrpt-libmaps, ros-humble-mrpt-libobs, ros-humble-tf2, ros-humble-tf2-geometry-msgs, ros-humble-tf2-ros, ros-humble-ros-workspace
+Description: MOLA DataSource from ROS1 bag files that does not need a ROS1 installation
