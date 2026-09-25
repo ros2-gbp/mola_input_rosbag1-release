@@ -7,13 +7,14 @@
    | Released under BSD License. See: https://www.mrpt.org/License          |
    +------------------------------------------------------------------------+ */
 
-#include <mrpt/maps/CColouredPointsMap.h>
 #include <mrpt/maps/CSimplePointsMap.h>
 #include <mrpt/ros1bridge/point_cloud2.h>
 #include <mrpt/ros1bridge/time.h>
 #include <mrpt/version.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <sensor_msgs/PointField.h>
+
+#include <cmath>
 
 using namespace mrpt::maps;
 
@@ -53,6 +54,19 @@ void get_float_from_field(
       output = *(reinterpret_cast<const float*>(&data[field->offset]));
     else
       output = (float)(*(reinterpret_cast<const double*>(&data[field->offset])));
+  }
+  else
+    output = 0.0;
+}
+void get_double_from_field(
+    const sensor_msgs::PointField* field, const unsigned char* data, double& output)
+{
+  if (field != nullptr)
+  {
+    if (field->datatype == sensor_msgs::PointField::FLOAT32)
+      output = static_cast<double>(*(reinterpret_cast<const float*>(&data[field->offset])));
+    else if (field->datatype == sensor_msgs::PointField::FLOAT64)
+      output = *(reinterpret_cast<const double*>(&data[field->offset]));
   }
   else
     output = 0.0;
@@ -162,7 +176,10 @@ bool mrpt::ros1bridge::fromROS(const sensor_msgs::PointCloud2& msg, CGenericPoin
 
   obj.resize(num_points);
 
-  std::optional<float> minTime, maxTime;
+  // Absolute per-point stamps are re-based on the message header stamp, so
+  // that t=0 always means the observation timestamp (set from the header
+  // below), whatever the storage order of the points.
+  const double headerStamp = msg.header.stamp.toSec();
 
   unsigned int idx = 0;
   for (unsigned int row = 0; row < msg.height; ++row)
@@ -192,10 +209,11 @@ bool mrpt::ros1bridge::fromROS(const sensor_msgs::PointCloud2& msg, CGenericPoin
       }
       if (t_field)
       {
-        float t = 0;
-        if (t_field->datatype == sensor_msgs::PointField::FLOAT32)
+        double td = 0;
+        if (t_field->datatype == sensor_msgs::PointField::FLOAT32 ||
+            t_field->datatype == sensor_msgs::PointField::FLOAT64)
         {
-          get_float_from_field(t_field, msg_data, t);
+          get_double_from_field(t_field, msg_data, td);
         }
         else
         {
@@ -206,34 +224,27 @@ bool mrpt::ros1bridge::fromROS(const sensor_msgs::PointCloud2& msg, CGenericPoin
           // I only found one case (NTU Viral dataset) using uint32_t for time,
           // and times ranged from 0 to ~99822766 = 100,000,000 = 1e8
           // so they seem to be nanoseconds:
-          t = t_raw * 1e-9f;
+          td = t_raw * 1e-9;
         }
-        obj.setPointField_float(idx, CPointsMap::POINT_FIELD_TIMESTAMP, t);
 
-        if (!minTime)
+        // If the sensor uses absolute timestamps, convert them to relative:
+        // otherwise precision is lost in the double->float conversion below.
+        if (std::abs(td) > 5.0)
         {
-          minTime = t;
-          maxTime = t;
+          td -= headerStamp;
         }
-        else
-        {
-          mrpt::keep_min(*minTime, t);
-          mrpt::keep_max(*maxTime, t);
-        }
+
+        const float t = static_cast<float>(td);
+        obj.setPointField_float(idx, CPointsMap::POINT_FIELD_TIMESTAMP, t);
       }
     }
   }
 
-  // Force timestamps to be in the range [-T/2,T/2]:
-  if (t_field && minTime && *maxTime > *minTime)
-  {
-    const float At = (*maxTime - *minTime) * 0.5f;
-    for (size_t i = 0; i < obj.size(); i++)
-    {
-      const float t = obj.getPointField_float(i, CPointsMap::POINT_FIELD_TIMESTAMP);
-      obj.setPointField_float(i, CPointsMap::POINT_FIELD_TIMESTAMP, t - At);
-    }
-  }
+  // Per-point times are left relative to the header stamp, with no
+  // re-centering: shifting them without also shifting the observation
+  // timestamp would misplace the scan's reference epoch by half a sweep.
+  // Consumers that want another reference (e.g. mid-sweep) re-base both
+  // together (mp2p_icp's FilterAdjustTimestamps).
 
   return true;
 }
