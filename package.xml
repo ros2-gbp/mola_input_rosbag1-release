@@ -5,7 +5,7 @@
 -->
 <package format="3">
   <name>mola_input_rosbag1</name>
-  <version>0.4.0</version>
+  <version>0.5.0</version>
   <description>MOLA DataSource from ROS1 bag files that does not need a ROS1 installation</description>
 
   <maintainer email="joseluisblancoc@gmail.com">Jose-Luis Blanco-Claraco</maintainer>
@@ -15,8 +15,8 @@
 
   <depend>mola_common</depend>
   <depend>mola_kernel</depend>
-  <depend>mrpt_libobs</depend>
-  <depend>mrpt_libmaps</depend>
+  <depend>mrpt_obs</depend>
+  <depend>mrpt_maps</depend>
   <!-- mrpt_libros_bridge is vendored here as a git submodule (mrpt_ros_bridge/)
        until it is released within MRPT itself. -->
   <!-- ROS1 message definitions and rosbag (de)serialization are vendored under

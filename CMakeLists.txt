@@ -7,7 +7,7 @@
 # Released under GNU GPL v3. See LICENSE file
 # ------------------------------------------------------------------------------
 
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.10)
 
 # Tell CMake we'll use C++ for use in its tests/flags
 project(mola_input_rosbag1 LANGUAGES C CXX)
@@ -15,8 +15,8 @@ project(mola_input_rosbag1 LANGUAGES C CXX)
 # MOLA CMake scripts: "mola_xxx()"
 find_package(mola_common REQUIRED)
 # find dependencies:
-find_package(mrpt-obs REQUIRED)
-find_package(mrpt-maps REQUIRED)
+find_package(mrpt_obs REQUIRED)
+find_package(mrpt_maps REQUIRED)
 # ROS1 (de)serialization and message definitions are vendored (see ros1/ and
 # mrpt_ros_bridge/ subdirectories), so a ROS1 installation is NOT required.
 # We only use ROS2 tf2 for the transform tree:
@@ -43,8 +43,8 @@ mola_add_library(
   SOURCES ${LIB_SRCS} ${LIB_PUBLIC_HDRS}
   PRIVATE_LINK_LIBRARIES
     mola::mola_kernel
-    mrpt::obs
-    mrpt::maps
+    mrpt::mrpt_obs
+    mrpt::mrpt_maps
     mrpt_ros1bridge
     tf2::tf2
     tf2_geometry_msgs::tf2_geometry_msgs
@@ -52,7 +52,7 @@ mola_add_library(
     ${OpenCV_LIBS}
   CMAKE_DEPENDENCIES
     mola_kernel
-    mrpt-obs
+    mrpt_obs
     #mrpt-ros1bridge  (internal to this package for now)
 )
 
@@ -77,10 +77,9 @@ set(LIB_SRCS
   mrpt_ros_bridge/ros1bridge/src/gps.cpp
   mrpt_ros_bridge/ros1bridge/src/imu.cpp
   mrpt_ros_bridge/ros1bridge/src/pose.cpp
-  #mrpt_ros_bridge/ros1bridge/src/image.cpp
+  mrpt_ros_bridge/ros1bridge/src/image.cpp
   mrpt_ros_bridge/ros1bridge/src/point_cloud2.cpp
   mrpt_ros_bridge/ros1bridge/src/range.cpp
-  mrpt_ros_bridge/ros1bridge/src/point_cloud.cpp
 )
 
 set(LIB_PUBLIC_HDRS
@@ -91,7 +90,6 @@ set(LIB_PUBLIC_HDRS
   mrpt_ros_bridge/ros1bridge/include/mrpt/ros1bridge/map.h
   mrpt_ros_bridge/ros1bridge/include/mrpt/ros1bridge/gps.h
   mrpt_ros_bridge/ros1bridge/include/mrpt/ros1bridge/logging.h
-  mrpt_ros_bridge/ros1bridge/include/mrpt/ros1bridge/point_cloud.h
   mrpt_ros_bridge/ros1bridge/include/mrpt/ros1bridge/imu.h
   mrpt_ros_bridge/ros1bridge/include/mrpt/ros1bridge/laser_scan.h
   mrpt_ros_bridge/ros1bridge/include/mrpt/ros1bridge/point_cloud2.h
@@ -103,8 +101,8 @@ add_library(mrpt_ros1bridge STATIC ${LIB_SRCS} ${LIB_PUBLIC_HDRS})
 set_target_properties(mrpt_ros1bridge PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_link_libraries(mrpt_ros1bridge
   PUBLIC
-   mrpt::maps
-   mrpt::obs
+   mrpt::mrpt_maps
+   mrpt::mrpt_obs
    tf2::tf2
 )
 target_include_directories(mrpt_ros1bridge
@@ -122,27 +120,12 @@ target_include_directories(${PROJECT_NAME}
 target_link_libraries(mrpt_ros1bridge
   PRIVATE
   rosbag
-  #${roscpp_LIBRARIES}
-  #${cv_bridge_LIBRARIES}
 )
 target_include_directories(mrpt_ros1bridge
   SYSTEM
   PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/ros1/include
 )
-
-if (0)
-target_include_directories(${PROJECT_NAME}
-  SYSTEM
-  PUBLIC
-    ${tf2_INCLUDE_DIRS}
-  PRIVATE
-    ${cv_bridge_INCLUDE_DIRS}
-)
-target_compile_definitions(${PROJECT_NAME} PRIVATE ${ROS_DEFINITIONS})
-target_compile_definitions(${PROJECT_NAME} PRIVATE IS_MRPT_ROS1BRIDGE)
-target_compile_definitions(${PROJECT_NAME} PRIVATE CV_BRIDGE_VERSION=${cv_bridge_VERSION_HEX})
-endif()
 
 # ---------------------------------------------------
 # CLI app: "rosbag1-info" (equivalent to ROS1's `rosbag info`)
@@ -162,11 +145,5 @@ mola_add_executable(
 # ---------------------------------------------------
 
 
-
-# Convert package versions to hex so they can be used in preprocessor for wider
-# versions compatibility of "one-source for all":
-#mola_version_to_hex(${cv_bridge_VERSION}  cv_bridge_VERSION_HEX)
-#target_compile_definitions(${PROJECT_NAME} PRIVATE CV_BRIDGE_VERSION=${cv_bridge_VERSION_HEX})
-#message(STATUS "Found: cv_bridge_VERSION: ${cv_bridge_VERSION} (${cv_bridge_VERSION_HEX})")
 
 
