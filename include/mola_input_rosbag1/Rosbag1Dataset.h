@@ -20,6 +20,7 @@
  *  dataset exposes its /tf tree to other MOLA modules. */
 #define MOLA_HAS_TRANSFORM_TREE_SOURCE 1
 #endif
+#include <mrpt/img/TCamera.h>
 #include <mrpt/obs/CSensoryFrame.h>
 #include <mrpt/poses/CPose3D.h>
 
@@ -116,6 +117,18 @@ class Rosbag1Dataset : public RawDataSourceBase,
     auto lck       = mrpt::lockHelper(dataset_ui_mtx_);
     teleport_here_ = timestep;
   }
+#if defined(MOLA_KERNEL_DATASET_UI_HAS_TIME)
+  std::optional<double> datasetUI_time() const override
+  {
+    auto lck = mrpt::lockHelper(dataset_ui_mtx_);
+    return ui_dataset_time_;
+  }
+  std::optional<double> datasetUI_total_time() const override
+  {
+    auto lck = mrpt::lockHelper(dataset_ui_mtx_);
+    return dataset_total_time_;
+  }
+#endif
 
 #if defined(MOLA_HAS_TRANSFORM_TREE_SOURCE)
   // Virtual interface of TransformTreeSource (see docs in base class)
@@ -149,6 +162,12 @@ class Rosbag1Dataset : public RawDataSourceBase,
 
   std::optional<mrpt::Clock::time_point> last_play_wallclock_time_;
   double                                 last_dataset_time_ = 0;
+
+  /// Copy of last_dataset_time_ for the GUI, guarded by dataset_ui_mtx_.
+  double ui_dataset_time_ = 0;
+
+  /// Time span covered by all input bags [s], from their headers.
+  std::optional<double> dataset_total_time_;
 
   struct BagInfo;
   std::shared_ptr<BagInfo> bag_reader_;
@@ -185,8 +204,24 @@ class Rosbag1Dataset : public RawDataSourceBase,
 
   using CallbackFunction = std::function<Obs(const rosbag::MessageInstance&)>;
 
-  std::map<std::string, std::vector<CallbackFunction>> lookup_;
-  std::set<std::string>                                unhandledTopics_;
+  /// One registered handler for a topic. The clock correction is stored here,
+  /// and not per topic, since several sensor entries may share one topic and
+  /// each of them may declare its own `time_offset`.
+  struct TopicHandler
+  {
+    TopicHandler() = default;
+    TopicHandler(const CallbackFunction& cb, double offset = 0) : callback(cb), timeOffset(offset)
+    {
+    }
+
+    CallbackFunction callback;
+
+    /// Constant correction [s] added to this handler's observation timestamps.
+    double timeOffset = 0;
+  };
+
+  std::map<std::string, std::vector<TopicHandler>> lookup_;
+  std::set<std::string>                            unhandledTopics_;
 
   std::shared_ptr<tf2::BufferCore> tfBuffer_;
 
@@ -207,7 +242,7 @@ class Rosbag1Dataset : public RawDataSourceBase,
 
   /// Converts a Livox `livox_ros_driver/CustomMsg` or `livox_ros_driver2/CustomMsg`
   /// (used e.g. by the Livox AVIA, as in the BotanicGarden dataset) into a
-  /// CObservationPointCloud holding a CPointsMapXYZIRT-like cloud
+  /// CObservationPointCloud holding a CGenericPointsMap with the fields
   /// (intensity=reflectivity, ring=line, time=offset_time). Both message
   /// types share the same field layout and MD5 sum, so a single converter
   /// handles both. See `toPointCloud2` for `useBagRecordTime`.
@@ -233,15 +268,33 @@ class Rosbag1Dataset : public RawDataSourceBase,
 
   Obs toOdometry(std::string_view msg, const rosbag::MessageInstance& rosmsg);
 
-  Obs toPoseStamped(std::string_view msg, const rosbag::MessageInstance& rosmsg);
-
-  Obs toImage(
+  /// Builds a CObservationRobotPose, which carries a full SE(3) pose plus its
+  /// 6x6 covariance, from any of `geometry_msgs/PoseStamped`,
+  /// `geometry_msgs/PoseWithCovarianceStamped` or `nav_msgs/Odometry`.
+  ///
+  /// For `nav_msgs/Odometry` this is the lossless alternative to toOdometry():
+  /// CObservationOdometry is planar, so it can only carry (x, y, yaw) and a
+  /// 2D twist, dropping z, roll, pitch and the covariance that a 3D source
+  /// (legged robot, VIO, aerial platform) actually publishes. Select it with
+  /// an explicit `type: CObservationRobotPose` on the topic; the automatic
+  /// mapping for `nav_msgs/Odometry` stays CObservationOdometry.
+  Obs toRobotPose(
       std::string_view msg, const rosbag::MessageInstance& rosmsg,
       const std::optional<mrpt::poses::CPose3D>& fixedSensorPose);
+
+  /// `fixedCameraParams`: intrinsics resolved once at registration time, either
+  /// auto-discovered from a sibling `sensor_msgs/CameraInfo` topic (see
+  /// `findCameraInfoTopic()`) or left empty if none was found, in which case
+  /// `CObservationImage::cameraParams` keeps its default (all-zero) value.
+  Obs toImage(
+      std::string_view msg, const rosbag::MessageInstance& rosmsg,
+      const std::optional<mrpt::poses::CPose3D>& fixedSensorPose,
+      const std::optional<mrpt::img::TCamera>&   fixedCameraParams);
 
   Obs toCompressedImage(
       std::string_view msg, const rosbag::MessageInstance& rosmsg,
-      const std::optional<mrpt::poses::CPose3D>& fixedSensorPose);
+      const std::optional<mrpt::poses::CPose3D>& fixedSensorPose,
+      const std::optional<mrpt::img::TCamera>&   fixedCameraParams);
 
   Obs catchExceptions(const std::function<Obs()>& f);
 
