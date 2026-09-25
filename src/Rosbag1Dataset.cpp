@@ -20,6 +20,7 @@
 #include <mola_input_rosbag1/Rosbag1Dataset.h>
 #include <mola_yaml/yaml_helpers.h>
 #include <mrpt/containers/yaml.h>
+#include <mrpt/core/bits_math.h>
 #include <mrpt/core/initializer.h>
 #include <mrpt/img/CImage.h>
 #include <mrpt/maps/CGenericPointsMap.h>
@@ -34,9 +35,11 @@
 #include <mrpt/obs/CObservationRotatingScan.h>
 #include <mrpt/poses/CPose3DPDFGaussian.h>
 #include <mrpt/system/filesystem.h>
+#include <mrpt/system/string_utils.h>
 
 // MRPT <-> ROS1 message conversions (vendored mrpt_ros1bridge sub-library):
 #include <mrpt/ros1bridge/gps.h>
+#include <mrpt/ros1bridge/image.h>
 #include <mrpt/ros1bridge/imu.h>
 #include <mrpt/ros1bridge/laser_scan.h>
 #include <mrpt/ros1bridge/point_cloud2.h>
@@ -45,11 +48,13 @@
 
 // Vendored ROS1 message definitions and rosbag reader:
 #include <geometry_msgs/PoseStamped.h>
+#include <geometry_msgs/PoseWithCovarianceStamped.h>
 #include <geometry_msgs/TransformStamped.h>
 #include <livox_ros_driver/CustomMsg.h>
 #include <nav_msgs/Odometry.h>
 #include <rosbag/bag.h>
 #include <rosbag/view.h>
+#include <sensor_msgs/CameraInfo.h>
 #include <sensor_msgs/CompressedImage.h>
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/Imu.h>
@@ -103,8 +108,12 @@ geometry_msgs::msg::TransformStamped toRos2Transform(const geometry_msgs::Transf
   return out;
 }
 
-/** Manual conversion sensor_msgs/Image -> mrpt::img::CImage, so we do not
- *  depend on cv_bridge (which would require its ROS2 message types). */
+/** sensor_msgs/Image -> mrpt::img::CImage.
+ *
+ *  The plain encodings are handled by the bridge; only the Bayer patterns are
+ *  handled here, since debayering needs OpenCV and the bridge does not depend
+ *  on it.
+ */
 mrpt::img::CImage imageFromROS(const sensor_msgs::Image& image)
 {
   namespace enc = sensor_msgs::image_encodings;
@@ -116,121 +125,144 @@ mrpt::img::CImage imageFromROS(const sensor_msgs::Image& image)
 
   const std::string& encoding = image.encoding;
 
-  bool         color       = false;
-  bool         swapRedBlue = false;
-  unsigned int channels    = 0;
-  if (encoding == enc::MONO8)
-  {
-    color    = false;
-    channels = 1;
-  }
-  else if (encoding == enc::BGR8)
-  {
-    color       = true;
-    channels    = 3;
-    swapRedBlue = false;
-  }
-  else if (encoding == enc::RGB8)
-  {
-    color       = true;
-    channels    = 3;
-    swapRedBlue = true;
-  }
-  else if (encoding == enc::MONO16)
-  {
-    // 16-bit grayscale: scale the high byte to produce an 8-bit image.
-    mrpt::img::CImage    out;
-    std::vector<uint8_t> buf(static_cast<size_t>(w) * h);
-    for (unsigned int row = 0; row < h; row++)
-    {
-      const auto* srcRow = reinterpret_cast<const uint16_t*>(
-          image.data.data() + static_cast<size_t>(row) * image.step);
-      uint8_t* dstRow = buf.data() + static_cast<size_t>(row) * w;
-      for (unsigned int col = 0; col < w; col++)
-        dstRow[col] = static_cast<uint8_t>(srcRow[col] >> 8);
-    }
-    out.loadFromMemoryBuffer(w, h, false /*grayscale*/, buf.data());
-    return out;
-  }
-  else if (
-      encoding == enc::BAYER_RGGB8 || encoding == enc::BAYER_BGGR8 ||
+  if (encoding == enc::BAYER_RGGB8 || encoding == enc::BAYER_BGGR8 ||
       encoding == enc::BAYER_GBRG8 || encoding == enc::BAYER_GRBG8)
   {
-    // Debayer to BGR using OpenCV.
-    // Mapping: ROS name → OpenCV code (matches cv_bridge convention)
-    int code = cv::COLOR_BayerBG2BGR;
-    if (encoding == enc::BAYER_BGGR8)
-      code = cv::COLOR_BayerRG2BGR;
-    else if (encoding == enc::BAYER_GBRG8)
-      code = cv::COLOR_BayerGR2BGR;
-    else if (encoding == enc::BAYER_GRBG8)
-      code = cv::COLOR_BayerGB2BGR;
-    // else BAYER_RGGB8 → COLOR_BayerBG2BGR (already default)
+    ASSERT_GE_(image.step, w);
+    ASSERT_GE_(image.data.size(), static_cast<size_t>(image.step) * h);
 
-    cv::Mat src(
+    // Debayer straight into RGB, which is how CImage stores color pixels.
+    // Mapping: ROS name -> OpenCV code (matches the cv_bridge convention)
+    int code = cv::COLOR_BayerBG2RGB;
+    if (encoding == enc::BAYER_BGGR8)
+    {
+      code = cv::COLOR_BayerRG2RGB;
+    }
+    else if (encoding == enc::BAYER_GBRG8)
+    {
+      code = cv::COLOR_BayerGR2RGB;
+    }
+    else if (encoding == enc::BAYER_GRBG8)
+    {
+      code = cv::COLOR_BayerGB2RGB;
+    }
+
+    const cv::Mat src(
         static_cast<int>(h), static_cast<int>(w), CV_8UC1,
         const_cast<unsigned char*>(image.data.data()), image.step);
-    cv::Mat bgr;
-    cv::cvtColor(src, bgr, code);
+    cv::Mat rgb;
+    cv::cvtColor(src, rgb, code);
+
     mrpt::img::CImage out;
-    out.loadFromMemoryBuffer(w, h, true /*color*/, bgr.data, false /*already BGR*/);
+    out.loadFromMemoryBuffer(w, h, mrpt::img::CH_RGB, rgb.data);
     return out;
   }
-  else if (encoding == enc::RGBA8)
+
+  return mrpt::ros1bridge::fromROS(image);
+}
+
+/** Manual conversion sensor_msgs/CameraInfo -> mrpt::img::TCamera. Unknown
+ *  distortion models are left as DistortionModel::none rather than guessing a
+ *  wrong one, and set `recognized` to false so the caller can warn: silently
+ *  dropping a real distortion is far more damaging than an unhandled model,
+ *  since every feature is then mislocated by a fixed, purely radial amount that
+ *  no amount of outlier rejection can catch.
+ *
+ *  Model names are not standardized across calibration toolchains, so the
+ *  common aliases are accepted for each of the two supported families.
+ *
+ *  `isRectified`: the images of this topic are already rectified, so the ROS
+ *  convention applies: the valid intrinsics are those of the projection matrix
+ *  P (which differ from K after rectification) and there is no distortion left
+ *  to model. Using K and D there would distort an already-undistorted image.
+ */
+mrpt::img::TCamera cameraInfoFromROS(
+    const sensor_msgs::CameraInfo& info, bool isRectified, bool& recognized)
+{
+  mrpt::img::TCamera cam;
+  cam.ncols  = info.width;
+  cam.nrows  = info.height;
+  recognized = true;
+
+  if (isRectified)
   {
-    cv::Mat src(
-        static_cast<int>(h), static_cast<int>(w), CV_8UC4,
-        const_cast<unsigned char*>(image.data.data()), image.step);
-    cv::Mat bgr;
-    cv::cvtColor(src, bgr, cv::COLOR_RGBA2BGR);
-    mrpt::img::CImage out;
-    out.loadFromMemoryBuffer(w, h, true, bgr.data, false);
-    return out;
+    cam.setIntrinsicParamsFromValues(info.P[0], info.P[5], info.P[2], info.P[6]);
+    cam.distortion = mrpt::img::DistortionModel::none;
+    return cam;
   }
-  else if (encoding == enc::BGRA8)
+
+  cam.setIntrinsicParamsFromValues(info.K[0], info.K[4], info.K[2], info.K[5]);
+
+  const std::vector<double>& d   = info.D;
+  const auto                 dAt = [&d](size_t i) { return i < d.size() ? d[i] : 0.0; };
+
+  if (info.distortion_model == "plumb_bob" || info.distortion_model == "radtan")
   {
-    cv::Mat src(
-        static_cast<int>(h), static_cast<int>(w), CV_8UC4,
-        const_cast<unsigned char*>(image.data.data()), image.step);
-    cv::Mat bgr;
-    cv::cvtColor(src, bgr, cv::COLOR_BGRA2BGR);
-    mrpt::img::CImage out;
-    out.loadFromMemoryBuffer(w, h, true, bgr.data, false);
-    return out;
+    cam.setDistortionPlumbBob(dAt(0), dAt(1), dAt(2), dAt(3), dAt(4));
+  }
+  else if (info.distortion_model == "rational_polynomial")
+  {
+    // ROS orders D as [k1 k2 p1 p2 k3 k4 k5 k6], which is exactly MRPT's
+    // 8-coefficient plumb_bob layout, so no coefficient is dropped.
+    cam.setDistortionPlumbBob(dAt(0), dAt(1), dAt(2), dAt(3), dAt(4));
+    cam.k4(dAt(5));
+    cam.k5(dAt(6));
+    cam.k6(dAt(7));
+  }
+  else if (
+      info.distortion_model == "equidistant" || info.distortion_model == "fisheye" ||
+      info.distortion_model == "kannala_brandt")
+  {
+    cam.setDistortionKannalaBrandt(dAt(0), dAt(1), dAt(2), dAt(3));
   }
   else
   {
-    THROW_EXCEPTION_FMT(
-        "Unsupported image encoding '%s'. Supported: mono8, mono16, rgb8, bgr8, rgba8, bgra8, "
-        "bayer_rggb8, bayer_bggr8, bayer_gbrg8, bayer_grbg8.",
-        encoding.c_str());
+    // An empty model with no coefficients is a legitimate way to say "already
+    // undistorted"; anything else means real distortion is being discarded.
+    const bool hasCoefficients = std::any_of(d.begin(), d.end(), [](double v) { return v != 0.0; });
+    recognized                 = !hasCoefficients;
   }
+  return cam;
+}
 
-  const unsigned int expectedStride = w * channels;
-  ASSERT_GE_(image.data.size(), static_cast<size_t>(image.step) * h);
+/** True if the image topic follows the ROS `image_proc` naming convention for
+ *  already-rectified images. */
+bool isRectifiedImageTopic(const std::string& imageTopic)
+{
+  std::vector<std::string> parts;
+  mrpt::system::tokenize(imageTopic, "/", parts);
+  return std::any_of(
+      parts.begin(), parts.end(),
+      [](const std::string& s) { return s == "image_rect" || s == "image_rect_color"; });
+}
 
-  mrpt::img::CImage out;
-
-  if (image.step == expectedStride)
+/** Finds the `sensor_msgs/CameraInfo` topic paired with an image topic,
+ *  following the standard ROS `image_transport` convention: the info topic
+ *  lives at the parent namespace of the (possibly transport-suffixed) image
+ *  topic, e.g. ".../cam/image_raw/compressed" pairs with
+ *  ".../cam/camera_info". Walks up the topic path one segment at a time so it
+ *  also matches ".../cam/image_raw" directly, without hardcoding "image_raw"
+ *  or any particular transport suffix. */
+std::optional<std::string> findCameraInfoTopic(
+    const std::string& imageTopic, const std::map<std::string, std::string>& topic2type)
+{
+  std::string prefix = imageTopic;
+  for (;;)
   {
-    // Contiguous: load directly (CImage copies the buffer):
-    out.loadFromMemoryBuffer(
-        w, h, color, const_cast<unsigned char*>(image.data.data()), swapRedBlue);
-  }
-  else
-  {
-    // Row stride has padding: repack into a contiguous buffer first:
-    std::vector<unsigned char> packed(static_cast<size_t>(expectedStride) * h);
-    for (unsigned int row = 0; row < h; row++)
+    const auto slashPos = prefix.find_last_of('/');
+    if (slashPos == std::string::npos || slashPos == 0)
     {
-      std::memcpy(
-          packed.data() + static_cast<size_t>(row) * expectedStride,
-          image.data.data() + static_cast<size_t>(row) * image.step, expectedStride);
+      break;
     }
-    out.loadFromMemoryBuffer(w, h, color, packed.data(), swapRedBlue);
+    prefix               = prefix.substr(0, slashPos);
+    const auto candidate = prefix + "/camera_info";
+    const auto it        = topic2type.find(candidate);
+    if (it != topic2type.end() && it->second == "sensor_msgs/CameraInfo")
+    {
+      return candidate;
+    }
   }
-
-  return out;
+  return std::nullopt;
 }
 }  // namespace
 
@@ -269,6 +301,7 @@ void Rosbag1Dataset::initialize_rds(const Yaml& c)
       {"sensor_msgs/NavSatFix", "CObservationGPS"},
       {"nav_msgs/Odometry", "CObservationOdometry"},
       {"geometry_msgs/PoseStamped", "CObservationRobotPose"},
+      {"geometry_msgs/PoseWithCovarianceStamped", "CObservationRobotPose"},
   };
 
   MRPT_START
@@ -282,22 +315,40 @@ void Rosbag1Dataset::initialize_rds(const Yaml& c)
   // 'rosbag_filename' may be either a single scalar path, or a YAML sequence
   // of paths, so that several .bag files (e.g. a sensors bag plus a separate
   // ground-truth-only bag) can be merged and replayed jointly, in time order.
+  //
+  // Each entry may itself be a comma-separated list of paths, which is how a
+  // recording split into many parts is passed through a single string: it is
+  // already the convention of the offline CLI's "--input-rosbag1 a.bag,b.bag",
+  // and a launch file can only offer a fixed number of sequence slots, so
+  // without this a dataset with more parts than slots cannot be replayed
+  // online at all.
   ENSURE_YAML_ENTRY_EXISTS(cfg, "rosbag_filename");
   const auto rosbagFilenameNode = cfg["rosbag_filename"];
+
+  const auto appendBagsFrom = [this](const std::string& entry)
+  {
+    std::vector<std::string> parts;
+    mrpt::system::tokenize(entry, ",", parts);
+    for (const auto& p : parts)
+    {
+      // Skip empty entries, e.g. coming from an unset "${OPTIONAL_BAG|}"
+      // mola-cli environment-variable placeholder, so that a second
+      // (ground-truth) bag can be made optional in a launch file.
+      if (const auto s = mrpt::system::trim(p); !s.empty()) rosbag_filenames_.push_back(s);
+    }
+  };
+
   if (rosbagFilenameNode.isSequence())
   {
     const auto seq = rosbagFilenameNode.asSequence();
     for (const auto& f : seq)
     {
-      // Skip empty entries, e.g. coming from an unset "${OPTIONAL_BAG|}"
-      // mola-cli environment-variable placeholder, so that a second
-      // (ground-truth) bag can be made optional in a launch file.
-      if (auto s = f.as<std::string>(); !s.empty()) rosbag_filenames_.push_back(s);
+      appendBagsFrom(f.as<std::string>());
     }
   }
   else
   {
-    rosbag_filenames_.push_back(rosbagFilenameNode.as<std::string>());
+    appendBagsFrom(rosbagFilenameNode.as<std::string>());
   }
   ASSERT_(!rosbag_filenames_.empty());
   rosbag_filename_ = rosbag_filenames_.front();
@@ -321,6 +372,13 @@ void Rosbag1Dataset::initialize_rds(const Yaml& c)
 
   // Message count:
   bagMessageCount_ = bag_reader_->full_view.size();
+
+  // Total time span of the input bag(s), for the GUI:
+  if (bagMessageCount_ > 0)
+  {
+    dataset_total_time_ =
+        (bag_reader_->full_view.getEndTime() - bag_reader_->full_view.getBeginTime()).toSec();
+  }
 
   MRPT_LOG_INFO_STREAM("List of topics found in the bag (" << bagMessageCount_ << " msgs)");
 
@@ -516,21 +574,21 @@ void Rosbag1Dataset::initialize_rds(const Yaml& c)
 
   for (auto& sensorNode : sensorsYaml.asSequence())
   {
-    const auto&       sensor = sensorNode.asMap();
-    const std::string topic  = sensor.at("topic").as<std::string>();
+    const mrpt::containers::yaml sensor(sensorNode);
+    const std::string            topic = sensor["topic"].as<std::string>();
 
     std::string sensorLabel = topic;
-    if (sensor.count("sensorLabel") != 0)
+    if (sensor.has("sensorLabel"))
     {
-      sensorLabel = sensor.at("sensorLabel").as<std::string>();
+      sensorLabel = sensor["sensorLabel"].as<std::string>();
     }
 
     // Map to MOLA class: auto or manual:
     std::string sensorType;
 
-    if (sensor.count("type") != 0)
+    if (sensor.has("type"))
     {
-      sensorType = sensor.at("type").as<std::string>();
+      sensorType = sensor["type"].as<std::string>();
     }
     else
     {
@@ -557,21 +615,42 @@ void Rosbag1Dataset::initialize_rds(const Yaml& c)
 
     // Optional: fixed sensorPose (then ignores/don't need "tf" data):
     std::optional<mrpt::poses::CPose3D> fixedSensorPose;
-    if (sensor.count("fixed_sensor_pose") != 0 && (sensor.count("use_fixed_sensor_pose") == 0 ||
-                                                   sensor.at("use_fixed_sensor_pose").as<bool>()))
+    if (sensor.has("fixed_sensor_pose") &&
+        (!sensor.has("use_fixed_sensor_pose") || sensor["use_fixed_sensor_pose"].as<bool>()))
     {
       fixedSensorPose = mrpt::poses::CPose3D::FromString(
-          "["s + sensor.at("fixed_sensor_pose").as<std::string>() + "]"s);
+          "["s + sensor["fixed_sensor_pose"].as<std::string>() + "]"s);
     }
 
     // Optional: some drivers stamp messages with an internal clock never
     // synced to the recording PC's wall clock, which breaks GT time lookups.
     // See the doc comment on toPointCloud2() for details.
     bool useBagRecordTime = false;
-    if (sensor.count("use_bag_record_time") != 0)
+    if (sensor.has("use_bag_record_time"))
     {
-      useBagRecordTime = sensor.at("use_bag_record_time").as<bool>();
+      useBagRecordTime = sensor["use_bag_record_time"].as<bool>();
     }
+
+    // Optional: a constant correction, in seconds, added to this sensor's
+    // timestamps. Unlike use_bag_record_time it does not change WHICH clock is
+    // used, only shifts it, for a sensor whose stamps are consistently early or
+    // late with respect to the rest of the rig (an unmodeled exposure or
+    // transport latency, typically).
+    double timeOffset = 0;
+    if (sensor.has("time_offset"))
+    {
+      timeOffset = sensor["time_offset"].as<double>();
+      if (timeOffset != 0.0)
+      {
+        MRPT_LOG_INFO_FMT(
+            "- '%s' (topic '%s'): applying a constant time_offset of %+.6f s.", sensorLabel.c_str(),
+            topic.c_str(), timeOffset);
+      }
+    }
+
+    // Number of handlers already installed for this topic, so the offset above
+    // is attached only to the one(s) added right below for this sensor entry:
+    const size_t handlersBefore = lookup_.count(topic) ? lookup_.at(topic).size() : 0;
 
     if (sensorType == "CObservationPointCloud")
     {
@@ -580,86 +659,163 @@ void Rosbag1Dataset::initialize_rds(const Yaml& c)
       const std::string rosType = topic2type.count(topic) ? topic2type.at(topic) : "";
       if (rosType == "livox_ros_driver/CustomMsg" || rosType == "livox_ros_driver2/CustomMsg")
       {
-        auto callback = [=](const rosbag::MessageInstance& m)
+        auto callback =
+            [this, sensorLabel, fixedSensorPose, useBagRecordTime](const rosbag::MessageInstance& m)
         {
           return catchExceptions(
-              [=]()
+              [this, sensorLabel, m, fixedSensorPose, useBagRecordTime]()
               { return toLivoxCustomMsg(sensorLabel, m, fixedSensorPose, useBagRecordTime); });
         };
         lookup_[topic].emplace_back(callback);
       }
       else
       {
-        auto callback = [=](const rosbag::MessageInstance& m)
+        auto callback =
+            [this, sensorLabel, fixedSensorPose, useBagRecordTime](const rosbag::MessageInstance& m)
         {
           return catchExceptions(
-              [=]() { return toPointCloud2(sensorLabel, m, fixedSensorPose, useBagRecordTime); });
+              [this, sensorLabel, m, fixedSensorPose, useBagRecordTime]()
+              { return toPointCloud2(sensorLabel, m, fixedSensorPose, useBagRecordTime); });
         };
         lookup_[topic].emplace_back(callback);
       }
     }
     else if (sensorType == "CObservationImage")
     {
+      // Auto-discover this image topic's paired sensor_msgs/CameraInfo topic
+      // (if any) and pre-scan its first message, so CObservationImage::
+      // cameraParams is populated without requiring a launch-file override.
+      std::optional<mrpt::img::TCamera> fixedCameraParams;
+      const bool                        rectifiedTopic = isRectifiedImageTopic(topic);
+      if (const auto infoTopic = findCameraInfoTopic(topic, topic2type); infoTopic)
+      {
+        rosbag::View infoView;
+        for (const auto& bag : bag_reader_->bags)
+        {
+          infoView.addQuery(*bag, rosbag::TopicQuery(std::vector<std::string>({*infoTopic})));
+        }
+        auto it = infoView.begin();
+        if (it != infoView.end())
+        {
+          if (const auto info = it->instantiate<sensor_msgs::CameraInfo>(); info)
+          {
+            bool modelRecognized = true;
+            fixedCameraParams    = cameraInfoFromROS(*info, rectifiedTopic, modelRecognized);
+            MRPT_LOG_INFO_FMT(
+                "- '%s': camera intrinsics from '%s' (%ux%u, fx=%.2f, fy=%.2f, %s)",
+                sensorLabel.c_str(), infoTopic->c_str(), fixedCameraParams->ncols,
+                fixedCameraParams->nrows, fixedCameraParams->fx(), fixedCameraParams->fy(),
+                rectifiedTopic ? "rectified topic: using P, no distortion" : "using K and D");
+            if (!modelRecognized)
+            {
+              MRPT_LOG_WARN_FMT(
+                  "- '%s': unsupported distortion_model '%s' with non-zero coefficients; the "
+                  "images will be treated as undistorted, which silently biases every feature "
+                  "position.",
+                  sensorLabel.c_str(), info->distortion_model.c_str());
+            }
+          }
+        }
+      }
+      else
+      {
+        MRPT_LOG_WARN_FMT(
+            "- '%s' (topic '%s'): no matching sensor_msgs/CameraInfo topic found; "
+            "CObservationImage::cameraParams will be left at its default (zero) value.",
+            sensorLabel.c_str(), topic.c_str());
+      }
+
       // Both sensor_msgs/Image and sensor_msgs/CompressedImage map here;
       // pick the right converter by checking the actual ROS type in the bag.
       const std::string rosType = topic2type.count(topic) ? topic2type.at(topic) : "";
       if (rosType == "sensor_msgs/CompressedImage")
       {
-        auto callback = [=](const rosbag::MessageInstance& m) {
-          return catchExceptions([=]()
-                                 { return toCompressedImage(sensorLabel, m, fixedSensorPose); });
+        auto callback = [this, sensorLabel, fixedSensorPose,
+                         fixedCameraParams](const rosbag::MessageInstance& m)
+        {
+          return catchExceptions(
+              [this, sensorLabel, m, fixedSensorPose, fixedCameraParams]()
+              { return toCompressedImage(sensorLabel, m, fixedSensorPose, fixedCameraParams); });
         };
         lookup_[topic].emplace_back(callback);
       }
       else
       {
-        auto callback = [=](const rosbag::MessageInstance& m)
-        { return catchExceptions([=]() { return toImage(sensorLabel, m, fixedSensorPose); }); };
+        auto callback = [this, sensorLabel, fixedSensorPose,
+                         fixedCameraParams](const rosbag::MessageInstance& m)
+        {
+          return catchExceptions(
+              [this, sensorLabel, m, fixedSensorPose, fixedCameraParams]()
+              { return toImage(sensorLabel, m, fixedSensorPose, fixedCameraParams); });
+        };
         lookup_[topic].emplace_back(callback);
       }
     }
 
     else if (sensorType == "CObservation2DRangeScan")
     {
-      auto callback = [=](const rosbag::MessageInstance& m)
-      { return catchExceptions([=]() { return toLidar2D(sensorLabel, m, fixedSensorPose); }); };
+      auto callback = [this, sensorLabel, fixedSensorPose](const rosbag::MessageInstance& m)
+      {
+        return catchExceptions([this, sensorLabel, m, fixedSensorPose]()
+                               { return toLidar2D(sensorLabel, m, fixedSensorPose); });
+      };
       lookup_[topic].emplace_back(callback);
     }
     else if (sensorType == "CObservationRotatingScan")
     {
-      auto callback = [=](const rosbag::MessageInstance& m) {
-        return catchExceptions([=]() { return toRotatingScan(sensorLabel, m, fixedSensorPose); });
+      auto callback = [this, sensorLabel, fixedSensorPose](const rosbag::MessageInstance& m)
+      {
+        return catchExceptions([this, sensorLabel, m, fixedSensorPose]()
+                               { return toRotatingScan(sensorLabel, m, fixedSensorPose); });
       };
       lookup_[topic].emplace_back(callback);
     }
     else if (sensorType == "CObservationIMU")
     {
-      auto callback = [=](const rosbag::MessageInstance& m)
-      { return catchExceptions([=]() { return toIMU(sensorLabel, m, fixedSensorPose); }); };
+      auto callback = [this, sensorLabel, fixedSensorPose](const rosbag::MessageInstance& m)
+      {
+        return catchExceptions([this, sensorLabel, m, fixedSensorPose]()
+                               { return toIMU(sensorLabel, m, fixedSensorPose); });
+      };
       lookup_[topic].emplace_back(callback);
     }
     else if (sensorType == "CObservationGPS")
     {
-      auto callback = [=](const rosbag::MessageInstance& m)
-      { return catchExceptions([=]() { return toGPS(sensorLabel, m, fixedSensorPose); }); };
+      auto callback = [this, sensorLabel, fixedSensorPose](const rosbag::MessageInstance& m)
+      {
+        return catchExceptions([this, sensorLabel, m, fixedSensorPose]()
+                               { return toGPS(sensorLabel, m, fixedSensorPose); });
+      };
       lookup_[topic].emplace_back(callback);
     }
     else if (sensorType == "CObservationOdometry")
     {
-      auto callback = [=](const rosbag::MessageInstance& m)
-      { return catchExceptions([=]() { return toOdometry(sensorLabel, m); }); };
+      auto callback = [this, sensorLabel](const rosbag::MessageInstance& m)
+      { return catchExceptions([this, sensorLabel, m]() { return toOdometry(sensorLabel, m); }); };
       lookup_[topic].emplace_back(callback);
     }
     else if (sensorType == "CObservationRobotPose")
     {
-      auto callback = [=](const rosbag::MessageInstance& m)
-      { return catchExceptions([=]() { return toPoseStamped(sensorLabel, m); }); };
+      auto callback = [this, sensorLabel, fixedSensorPose](const rosbag::MessageInstance& m)
+      {
+        return catchExceptions([this, sensorLabel, m, fixedSensorPose]()
+                               { return toRobotPose(sensorLabel, m, fixedSensorPose); });
+      };
       lookup_[topic].emplace_back(callback);
     }
     else if (!sensorType.empty())
     {
       THROW_EXCEPTION_FMT(
           "Unsupported sensor type '%s' for topic '%s'", sensorType.c_str(), topic.c_str());
+    }
+
+    if (timeOffset != 0.0)
+    {
+      auto& handlers = lookup_[topic];
+      for (size_t i = handlersBefore; i < handlers.size(); i++)
+      {
+        handlers[i].timeOffset = timeOffset;
+      }
     }
 
     MRPT_LOG_INFO_FMT(
@@ -845,6 +1001,7 @@ void Rosbag1Dataset::spinOnce()
     auto lck = mrpt::lockHelper(dataset_ui_mtx_);
 
     last_used_tim_index_ = rosbag_next_idx_;
+    ui_dataset_time_     = last_dataset_time_;
   }
 
   MRPT_END
@@ -1051,8 +1208,26 @@ std::optional<mola::TransformTree> Rosbag1Dataset::transform_tree(
 }
 #endif
 
+namespace
+{
+/** Drops one leading '/' from a TF frame name.
+ *
+ * ROS 1-era recordings routinely carry frame ids like "/os1_lidar", while
+ * tf2 canonicalizes names when they are inserted (BufferCore::setTransform
+ * strips the slash), so the tree ends up holding "os1_lidar". Looking it up
+ * with the raw header value therefore never matches, and every observation
+ * from such a bag gets dropped. Canonicalizing here too makes both sides
+ * agree, which is what tf2 itself does.
+ */
+std::string stripLeadingSlash(const std::string& frame)
+{
+  if (frame.size() > 1 && frame.front() == '/') return frame.substr(1);
+  return frame;
+}
+}  // namespace
+
 bool Rosbag1Dataset::findOutSensorPose(
-    mrpt::poses::CPose3D& des, const std::string& frame, const std::string& referenceFrame,
+    mrpt::poses::CPose3D& des, const std::string& frameRaw, const std::string& referenceFrameRaw,
     const std::optional<mrpt::poses::CPose3D>& fixedSensorPose, const std::string_view label)
 {
   if (fixedSensorPose)
@@ -1060,6 +1235,9 @@ bool Rosbag1Dataset::findOutSensorPose(
     des = fixedSensorPose.value();
     return true;
   }
+
+  const std::string frame          = stripLeadingSlash(frameRaw);
+  const std::string referenceFrame = stripLeadingSlash(referenceFrameRaw);
 
   try
   {
@@ -1083,13 +1261,18 @@ bool Rosbag1Dataset::findOutSensorPose(
     // Avoid throwing here (it would be very slow due to backtrace generation
     // when it happens for many messages): just warn (throttled) and let the
     // caller drop this single observation.
-    MRPT_LOG_THROTTLE_WARN_FMT(
-        5.0,
-        "[findOutSensorPose] Could not look up transform '%s' <- '%s' (label='%s'): %s\n"
-        "Dropping affected observations until the transform becomes available. "
-        "Currently known tf frames:\n%s",
-        referenceFrame.c_str(), frame.c_str(), std::string(label).c_str(), ex.what(),
-        tfBuffer_->allFramesAsString().c_str());
+    // Built as a stream, not with a printf-style variadic call. The former
+    // FMT version of this line segfaulted: a mismatch between its format
+    // string and its arguments had printf walk a non-pointer, so a path whose
+    // whole purpose is to warn and continue took the process down instead.
+    // A warning must never be able to do that, whatever provoked it.
+    MRPT_LOG_THROTTLE_WARN_STREAM(
+        5.0, "[findOutSensorPose] Could not look up transform '"
+                 << referenceFrame << "' <- '" << frame << "' (label='" << std::string(label)
+                 << "'): " << ex.what()
+                 << "\nDropping affected observations until the transform becomes available. "
+                    "Currently known tf frames:\n"
+                 << tfBuffer_->allFramesAsString());
     return false;
   }
 }
@@ -1377,25 +1560,78 @@ Rosbag1Dataset::Obs Rosbag1Dataset::toOdometry(
   return {mrptObs};
 }
 
-Rosbag1Dataset::Obs Rosbag1Dataset::toPoseStamped(
-    std::string_view label, const rosbag::MessageInstance& rosmsg)
+namespace
 {
-  const auto poseMsg = rosmsg.instantiate<geometry_msgs::PoseStamped>();
-  ASSERT_(poseMsg);
+/// A source that leaves `pose.covariance` all zeros is not claiming a perfect
+/// measurement, it is not filling the field in. Substitute something usable so
+/// downstream fusion does not read it as infinite confidence.
+void fillInDefaultPoseCovariance(mrpt::poses::CPose3DPDFGaussian& p)
+{
+  if (p.cov != mrpt::math::CMatrixDouble66::Zero())
+  {
+    return;
+  }
+  const double sigmaXYZ = 0.10;  // [m]
+  const double sigmaAng = mrpt::DEG2RAD(2.0);  // [rad]
+  for (int k = 0; k < 3; k++)
+  {
+    p.cov(k, k) = mrpt::square(sigmaXYZ);
+  }
+  for (int k = 3; k < 6; k++)
+  {
+    p.cov(k, k) = mrpt::square(sigmaAng);
+  }
+}
+}  // namespace
 
-  auto mrptObs = mrpt::obs::CObservationRobotPose::Create();
-
+Rosbag1Dataset::Obs Rosbag1Dataset::toRobotPose(
+    std::string_view label, const rosbag::MessageInstance& rosmsg,
+    const std::optional<mrpt::poses::CPose3D>& fixedSensorPose)
+{
+  auto mrptObs         = mrpt::obs::CObservationRobotPose::Create();
   mrptObs->sensorLabel = label;
-  mrptObs->timestamp   = mrpt::ros1bridge::fromROS(poseMsg->header.stamp);
+  // Unlike CObservationOdometry, this type can carry a sensor pose, so a
+  // source reported for a frame other than base_link remains usable here:
+  if (fixedSensorPose.has_value())
+  {
+    mrptObs->sensorPose = *fixedSensorPose;
+  }
 
-  mrptObs->pose.mean = mrpt::ros1bridge::fromROS(poseMsg->pose);
+  if (const auto m = rosmsg.instantiate<geometry_msgs::PoseStamped>(); m)
+  {
+    mrptObs->timestamp = mrpt::ros1bridge::fromROS(m->header.stamp);
+    mrptObs->pose.mean = mrpt::ros1bridge::fromROS(m->pose);
+    // geometry_msgs/PoseStamped carries no covariance at all:
+    fillInDefaultPoseCovariance(mrptObs->pose);
+  }
+  else if (const auto m2 = rosmsg.instantiate<geometry_msgs::PoseWithCovarianceStamped>(); m2)
+  {
+    mrptObs->timestamp = mrpt::ros1bridge::fromROS(m2->header.stamp);
+    mrptObs->pose      = mrpt::ros1bridge::fromROS(m2->pose);
+    fillInDefaultPoseCovariance(mrptObs->pose);
+  }
+  else if (const auto m3 = rosmsg.instantiate<nav_msgs::Odometry>(); m3)
+  {
+    mrptObs->timestamp = mrpt::ros1bridge::fromROS(m3->header.stamp);
+    mrptObs->pose      = mrpt::ros1bridge::fromROS(m3->pose);
+    fillInDefaultPoseCovariance(mrptObs->pose);
+  }
+  else
+  {
+    THROW_EXCEPTION_FMT(
+        "Topic for sensorLabel '%s' was declared as 'CObservationRobotPose' but its messages are "
+        "none of geometry_msgs/PoseStamped, geometry_msgs/PoseWithCovarianceStamped or "
+        "nav_msgs/Odometry.",
+        std::string(label).c_str());
+  }
 
   return {mrptObs};
 }
 
 Rosbag1Dataset::Obs Rosbag1Dataset::toImage(
     std::string_view label, const rosbag::MessageInstance& rosmsg,
-    const std::optional<mrpt::poses::CPose3D>& fixedSensorPose)
+    const std::optional<mrpt::poses::CPose3D>& fixedSensorPose,
+    const std::optional<mrpt::img::TCamera>&   fixedCameraParams)
 {
   const auto image = rosmsg.instantiate<sensor_msgs::Image>();
   ASSERT_(image);
@@ -1409,6 +1645,11 @@ Rosbag1Dataset::Obs Rosbag1Dataset::toImage(
   // depend on cv_bridge (which would require its ROS2 message types):
   imgObs->image = imageFromROS(*image);
 
+  if (fixedCameraParams)
+  {
+    imgObs->cameraParams = *fixedCameraParams;
+  }
+
   bool sensorPoseOK = findOutSensorPose(
       imgObs->cameraPose, image->header.frame_id, base_link_frame_id_, fixedSensorPose, label);
   if (!sensorPoseOK)
@@ -1421,7 +1662,8 @@ Rosbag1Dataset::Obs Rosbag1Dataset::toImage(
 
 Rosbag1Dataset::Obs Rosbag1Dataset::toCompressedImage(
     std::string_view label, const rosbag::MessageInstance& rosmsg,
-    const std::optional<mrpt::poses::CPose3D>& fixedSensorPose)
+    const std::optional<mrpt::poses::CPose3D>& fixedSensorPose,
+    const std::optional<mrpt::img::TCamera>&   fixedCameraParams)
 {
   const auto image = rosmsg.instantiate<sensor_msgs::CompressedImage>();
   ASSERT_(image);
@@ -1440,7 +1682,8 @@ Rosbag1Dataset::Obs Rosbag1Dataset::toCompressedImage(
   }
 
   // imdecode returns BGR; convert to the channel count MRPT expects:
-  const bool isColor = (decoded.channels() == 3);
+  const mrpt::img::TImageChannels channels =
+      (decoded.channels() == 3) ? mrpt::img::CH_RGB : mrpt::img::CH_GRAY;
   if (decoded.channels() == 4)
   {
     cv::cvtColor(decoded, decoded, cv::COLOR_BGRA2BGR);
@@ -1450,8 +1693,13 @@ Rosbag1Dataset::Obs Rosbag1Dataset::toCompressedImage(
   imgObs->sensorLabel = label;
   imgObs->timestamp   = mrpt::ros1bridge::fromROS(image->header.stamp);
   imgObs->image.loadFromMemoryBuffer(
-      static_cast<unsigned int>(decoded.cols), static_cast<unsigned int>(decoded.rows), isColor,
+      static_cast<unsigned int>(decoded.cols), static_cast<unsigned int>(decoded.rows), channels,
       decoded.data, false /*already BGR*/);
+
+  if (fixedCameraParams)
+  {
+    imgObs->cameraParams = *fixedCameraParams;
+  }
 
   bool sensorPoseOK = findOutSensorPose(
       imgObs->cameraPose, image->header.frame_id, base_link_frame_id_, fixedSensorPose, label);
@@ -1494,12 +1742,23 @@ Rosbag1Dataset::SF::Ptr Rosbag1Dataset::to_mrpt(const rosbag::MessageInstance& r
 
   if (auto search = lookup_.find(topic); search != lookup_.end())
   {
-    for (const auto& callback : search->second)
+    for (const auto& handler : search->second)
     {
-      auto obs = callback(rosmsg);
+      auto obs = handler.callback(rosmsg);
+
+      // Apply this handler's constant clock correction, if any. Done here, in
+      // the one place every converter's output passes through, rather than in
+      // each converter. Downstream, the read-ahead entry timestamp is taken
+      // from the observation, so playback pacing follows the corrected time.
+      const auto shift = std::chrono::duration_cast<mrpt::Clock::duration>(
+          std::chrono::duration<double>(handler.timeOffset));
 
       for (const auto& o : obs)
       {  // insert observation:
+        if (handler.timeOffset != 0.0)
+        {
+          o->timestamp += shift;
+        }
         rets->insert(o);
       }
     }
