@@ -5,7 +5,7 @@
 -->
 <package format="3">
   <name>mola_input_rosbag1</name>
-  <version>0.5.0</version>
+  <version>0.5.1</version>
   <description>MOLA DataSource from ROS1 bag files that does not need a ROS1 installation</description>
 
   <maintainer email="joseluisblancoc@gmail.com">Jose-Luis Blanco-Claraco</maintainer>
@@ -15,7 +15,7 @@
 
   <depend>mola_common</depend>
   <depend>mola_kernel</depend>
-  <depend>mrpt_obs</depend>
+  <depend version_gte="3.3.0">mrpt_obs</depend>
   <depend>mrpt_maps</depend>
   <!-- mrpt_libros_bridge is vendored here as a git submodule (mrpt_ros_bridge/)
        until it is released within MRPT itself. -->
@@ -28,8 +28,6 @@
   <depend>libboost-filesystem-dev</depend>
   <depend>libboost-program-options-dev</depend>
   <depend>libboost-regex-dev</depend>
-
-  <depend>libopencv-dev</depend>
 
   <depend>geometry_msgs</depend>
   <depend>tf2</depend>
