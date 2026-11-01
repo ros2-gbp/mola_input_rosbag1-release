@@ -1,3 +1,26 @@
+## mola_input_rosbag1 (kilted) - 0.5.1-1
+
+The packages in the `mola_input_rosbag1` repository were released into the `kilted` distro by running `/home/jlblanco/code/bloom-venv/bin/bloom-release --rosdistro kilted mola_input_rosbag1` on `Sun, 01 Nov 2026 19:46:04 -0000`
+
+The `mola_input_rosbag1` package was released.
+
+Version of package(s) in repository `mola_input_rosbag1`:
+
+- upstream repository: https://github.com/MOLAorg/mola_input_rosbag1.git
+- release repository: https://github.com/ros2-gbp/mola_input_rosbag1-release.git
+- rosdistro version: `0.5.0-1`
+- old version: `0.5.0-1`
+- new version: `0.5.1-1`
+
+Versions of tools used:
+
+- bloom version: `0.14.3`
+- catkin_pkg version: `0.5.2`
+- rosdep version: `0.22.2`
+- rosdistro version: `0.9.0`
+- vcstools version: `0.1.42`
+
+
 ## mola_input_rosbag1 (jazzy) - 0.5.1-1
 
 The packages in the `mola_input_rosbag1` repository were released into the `jazzy` distro by running `/home/jlblanco/code/bloom-venv/bin/bloom-release --rosdistro jazzy mola_input_rosbag1` on `Sun, 01 Nov 2026 19:44:25 -0000`
