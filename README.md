@@ -86,6 +86,7 @@ The pose of each sensor in the robot body frame is looked up from the bag's
 | `start_paused`       | no  | `false`    | Start playback paused. |
 | `sensors`            | no  | auto       | Explicit list of topics, types, and pose overrides. If omitted, all topics with a known mapping are exposed automatically using the topic name as `sensorLabel`. |
 | `ground_truth_topic` | no  | -          | Topic (`geometry_msgs/PoseStamped` or `nav_msgs/Odometry`) pre-scanned at start-up into a full trajectory, exposed via the `mola::OfflineDatasetSource` ground-truth API (`hasGroundTruthTrajectory()` / `getGroundTruthTrajectory()`), e.g. for `evo`-style evaluation. This is independent from (and can be combined with) listing the same topic under `sensors` for normal per-timestep publishing as a `CObservationRobotPose`/`CObservationOdometry`. |
+| `ground_truth_tum_file` | no | - | Ground-truth trajectory as a TUM text file (`t x y z qx qy qz qw`, `#` comments allowed), exposed through the same ground-truth API, e.g. to draw it in the GUI. Takes precedence over `ground_truth_topic`. |
 
 See `mola-cli-launchs/rosbag1_lidar.yaml` for a fully documented `sensors`
 example, and `mola-cli-launchs/rosbag1_botanicgarden.yaml` for an example
@@ -162,6 +163,27 @@ topics:      /imu/data          73279 msgs @   399.6 Hz : sensor_msgs/Imu
              /odom              37195 msgs @   200.0 Hz : nav_msgs/Odometry
              /velodyne_points    2071 msgs @     9.9 Hz : sensor_msgs/PointCloud2
 ```
+
+### `mola-sm-attach-from-rosbag1`
+
+Adds observations from a bag (e.g. camera images, for visual place recognition)
+to the keyframes of an existing `.simplemap`. Each observation goes to the
+keyframe closest in time (`--max-age`, default 0.5 s), and each keyframe keeps
+the closest one per topic, so none is stored twice. Images are written as
+jpg/png files to `<output>_Images/` (the external files of the input map are
+hard-linked there too); observations already in the map are not added again.
+
+```bash
+mola-sm-attach-from-rosbag1 -i map.simplemap -o map_cam.simplemap \
+  --rosbag1 dataset.bag --topic /camera/image_raw:camera_left
+```
+
+`--topic` is repeatable (`TOPIC` or `TOPIC:LABEL`), one label per topic: each
+keyframe gets one observation per label. Use `--fixed-sensor-pose
+"x y z yaw pitch roll"` for bags without `/tf`, and `--image-format png` or
+`inline` to change how images are stored.
+
+The ROS 2 version is `mola-sm-attach-from-rosbag2` (package `mola_input_rosbag2`).
 
 ## Building
 
